@@ -18,7 +18,41 @@ module yomcst
   real(kind=jprb) :: ratm = 100000.0_jprb
   real(kind=jprb) :: rg = 9.80665_jprb
   real(kind=jprb) :: rd = 287.0596736665907_jprb
+  real(kind=jprb) :: rv = 461.5249933083879_jprb
+  real(kind=jprb) :: rcpd = 3.5_jprb * 287.0596736665907_jprb
+  real(kind=jprb) :: rcpv = 4.0_jprb * 461.5249933083879_jprb
+  real(kind=jprb) :: rcw = 4218.0_jprb
+  real(kind=jprb) :: rcs = 2106.0_jprb
 end module yomcst
+
+module yom_ygfl
+  use parkind1, only: jpim, jprb
+  implicit none
+  type gfl_component
+    logical :: lthermact = .false.
+    integer(kind=jpim) :: mp = 1
+    integer(kind=jpim) :: mp1 = 1
+    integer(kind=jpim) :: mp5 = 1
+    integer(kind=jpim) :: mp9_ph = 1
+    integer(kind=jpim) :: mp_sl1 = 1
+    real(kind=jprb) :: r = 0.0_jprb
+    real(kind=jprb) :: rcp = 0.0_jprb
+  end type gfl_component
+
+  type type_ygfl
+    integer(kind=jpim) :: ndim = 0
+    integer(kind=jpim) :: numflds = 0
+    type(gfl_component), allocatable :: ycomp(:)
+    type(gfl_component) :: yg
+    type(gfl_component) :: yi
+    type(gfl_component) :: yl
+    type(gfl_component) :: yq
+    type(gfl_component) :: yr
+    type(gfl_component) :: ys
+  end type type_ygfl
+
+  type(type_ygfl) :: ygfl
+end module yom_ygfl
 
 module yomsta
   use parkind1, only: jpim, jprb
@@ -129,6 +163,16 @@ module yomvert
   use parkind1, only: jprb
   implicit none
   real(kind=jprb) :: vp00 = 100000.0_jprb
+  type tvab
+    real(kind=jprb), allocatable :: valh(:)
+    real(kind=jprb), allocatable :: vbh(:)
+    real(kind=jprb), allocatable :: vah(:)
+    real(kind=jprb), allocatable :: vc(:)
+    real(kind=jprb), allocatable :: vaf(:)
+    real(kind=jprb), allocatable :: vbf(:)
+    real(kind=jprb), allocatable :: vdela(:)
+    real(kind=jprb), allocatable :: vdelb(:)
+  end type tvab
 end module yomvert
 
 subroutine abor1(cdtext)

@@ -160,6 +160,33 @@ extern void fullpos_potential_vorticity_pressures_c(
     double *output,
     int *ierr);
 
+extern void fullpos_diagnose_potential_vorticity_c(
+    const int *ncol,
+    const int *nlev,
+    const double *u_values,
+    const double *v_values,
+    const double *temperature,
+    const double *relative_vorticity,
+    const double *temperature_meridional_gradient,
+    const double *temperature_zonal_gradient,
+    const double *surface_pressure_meridional_gradient,
+    const double *surface_pressure_zonal_gradient,
+    const double *kappa_values,
+    const double *ak,
+    const double *bk,
+    const double *ps,
+    const double *coriolis,
+    double *potential_vorticity,
+    double *potential_temperature,
+    int *ierr);
+
+extern void fullpos_gprcp_kappa_c(
+    const int *ncol,
+    const int *nlev,
+    const double *q_values,
+    double *kappa_values,
+    int *ierr);
+
 static PyArrayObject *as_c_array(PyObject *obj, int typenum, int min_ndim, int max_ndim)
 {
     PyArrayObject *arr = (PyArrayObject *)PyArray_FROM_OTF(obj, typenum, NPY_ARRAY_IN_ARRAY);
@@ -227,6 +254,20 @@ static int check_column_pressures(PyArrayObject *values, PyArrayObject *target_p
     }
     if (PyArray_DIM(target_pressures, 1) > INT_MAX) {
         PyErr_SetString(PyExc_ValueError, "target pressure dimension exceeds the native int interface");
+        return -1;
+    }
+    return 0;
+}
+
+static int check_same_shape_2d(PyArrayObject *reference, PyArrayObject *candidate, const char *name)
+{
+    if (PyArray_NDIM(candidate) != 2 ||
+        PyArray_DIM(candidate, 0) != PyArray_DIM(reference, 0) ||
+        PyArray_DIM(candidate, 1) != PyArray_DIM(reference, 1)) {
+        PyErr_Format(PyExc_ValueError, "%s must have shape (%ld, %ld)",
+                     name,
+                     (long)PyArray_DIM(reference, 0),
+                     (long)PyArray_DIM(reference, 1));
         return -1;
     }
     return 0;
@@ -1023,6 +1064,190 @@ fail:
     return NULL;
 }
 
+static PyObject *diagnose_potential_vorticity(PyObject *self, PyObject *args)
+{
+    PyObject *u_obj = NULL, *v_obj = NULL, *temperature_obj = NULL, *vort_obj = NULL;
+    PyObject *tm_obj = NULL, *tl_obj = NULL, *spm_obj = NULL, *spl_obj = NULL;
+    PyObject *kappa_obj = NULL, *ak_obj = NULL, *bk_obj = NULL, *ps_obj = NULL, *coriolis_obj = NULL;
+    PyArrayObject *u = NULL, *v = NULL, *temperature = NULL, *vort = NULL;
+    PyArrayObject *tm = NULL, *tl = NULL, *spm = NULL, *spl = NULL;
+    PyArrayObject *kappa = NULL, *ak = NULL, *bk = NULL, *ps = NULL, *coriolis = NULL;
+    PyArrayObject *pv_out = NULL, *theta_out = NULL;
+    int ncol, nlev, ierr = 0;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "OOOOOOOOOOOOO",
+                          &u_obj,
+                          &v_obj,
+                          &temperature_obj,
+                          &vort_obj,
+                          &tm_obj,
+                          &tl_obj,
+                          &spm_obj,
+                          &spl_obj,
+                          &kappa_obj,
+                          &ak_obj,
+                          &bk_obj,
+                          &ps_obj,
+                          &coriolis_obj)) {
+        return NULL;
+    }
+
+    u = as_fortran_array(u_obj, NPY_DOUBLE, 2, 2);
+    v = as_fortran_array(v_obj, NPY_DOUBLE, 2, 2);
+    temperature = as_fortran_array(temperature_obj, NPY_DOUBLE, 2, 2);
+    vort = as_fortran_array(vort_obj, NPY_DOUBLE, 2, 2);
+    tm = as_fortran_array(tm_obj, NPY_DOUBLE, 2, 2);
+    tl = as_fortran_array(tl_obj, NPY_DOUBLE, 2, 2);
+    spm = as_c_array(spm_obj, NPY_DOUBLE, 1, 1);
+    spl = as_c_array(spl_obj, NPY_DOUBLE, 1, 1);
+    kappa = as_fortran_array(kappa_obj, NPY_DOUBLE, 2, 2);
+    ak = as_c_array(ak_obj, NPY_DOUBLE, 1, 1);
+    bk = as_c_array(bk_obj, NPY_DOUBLE, 1, 1);
+    ps = as_c_array(ps_obj, NPY_DOUBLE, 1, 1);
+    coriolis = as_c_array(coriolis_obj, NPY_DOUBLE, 1, 1);
+    if (!u || !v || !temperature || !vort || !tm || !tl || !spm || !spl || !kappa || !ak || !bk || !ps || !coriolis) {
+        goto fail;
+    }
+    if (PyArray_DIM(u, 0) > INT_MAX || PyArray_DIM(u, 1) > INT_MAX) {
+        PyErr_SetString(PyExc_ValueError, "input dimensions exceed the native int interface");
+        goto fail;
+    }
+    if (PyArray_DIM(ak, 0) != PyArray_DIM(u, 1) + 1 || PyArray_DIM(bk, 0) != PyArray_DIM(u, 1) + 1) {
+        PyErr_SetString(PyExc_ValueError, "ak and bk must have nlev + 1 half-level coefficients");
+        goto fail;
+    }
+    if (PyArray_DIM(ps, 0) != PyArray_DIM(u, 0) || PyArray_DIM(coriolis, 0) != PyArray_DIM(u, 0) ||
+        PyArray_DIM(spm, 0) != PyArray_DIM(u, 0) || PyArray_DIM(spl, 0) != PyArray_DIM(u, 0)) {
+        PyErr_SetString(PyExc_ValueError, "surface vectors must have length ncol");
+        goto fail;
+    }
+    if (check_same_shape_2d(u, v, "v") != 0 ||
+        check_same_shape_2d(u, temperature, "temperature") != 0 ||
+        check_same_shape_2d(u, vort, "relative_vorticity") != 0 ||
+        check_same_shape_2d(u, tm, "temperature_meridional_gradient") != 0 ||
+        check_same_shape_2d(u, tl, "temperature_zonal_gradient") != 0 ||
+        check_same_shape_2d(u, kappa, "kappa") != 0) {
+        goto fail;
+    }
+
+    ncol = (int)PyArray_DIM(u, 0);
+    nlev = (int)PyArray_DIM(u, 1);
+    dims[0] = ncol;
+    dims[1] = nlev;
+    pv_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    theta_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!pv_out || !theta_out) {
+        goto fail;
+    }
+
+    fullpos_diagnose_potential_vorticity_c(&ncol,
+                                           &nlev,
+                                           (const double *)PyArray_DATA(u),
+                                           (const double *)PyArray_DATA(v),
+                                           (const double *)PyArray_DATA(temperature),
+                                           (const double *)PyArray_DATA(vort),
+                                           (const double *)PyArray_DATA(tm),
+                                           (const double *)PyArray_DATA(tl),
+                                           (const double *)PyArray_DATA(spm),
+                                           (const double *)PyArray_DATA(spl),
+                                           (const double *)PyArray_DATA(kappa),
+                                           (const double *)PyArray_DATA(ak),
+                                           (const double *)PyArray_DATA(bk),
+                                           (const double *)PyArray_DATA(ps),
+                                           (const double *)PyArray_DATA(coriolis),
+                                           (double *)PyArray_DATA(pv_out),
+                                           (double *)PyArray_DATA(theta_out),
+                                           &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS GPPVO potential-vorticity diagnostic failed with ierr=%d", ierr);
+        goto fail;
+    }
+
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(temperature);
+    Py_XDECREF(vort);
+    Py_XDECREF(tm);
+    Py_XDECREF(tl);
+    Py_XDECREF(spm);
+    Py_XDECREF(spl);
+    Py_XDECREF(kappa);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(coriolis);
+    return Py_BuildValue("NN", (PyObject *)pv_out, (PyObject *)theta_out);
+
+fail:
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(temperature);
+    Py_XDECREF(vort);
+    Py_XDECREF(tm);
+    Py_XDECREF(tl);
+    Py_XDECREF(spm);
+    Py_XDECREF(spl);
+    Py_XDECREF(kappa);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(coriolis);
+    Py_XDECREF(pv_out);
+    Py_XDECREF(theta_out);
+    return NULL;
+}
+
+static PyObject *gprcp_kappa(PyObject *self, PyObject *args)
+{
+    PyObject *q_obj = NULL;
+    PyArrayObject *q = NULL;
+    PyArrayObject *out = NULL;
+    int ncol, nlev, ierr = 0;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "O", &q_obj)) {
+        return NULL;
+    }
+
+    q = as_fortran_array(q_obj, NPY_DOUBLE, 2, 2);
+    if (!q) {
+        goto fail;
+    }
+    if (PyArray_DIM(q, 0) > INT_MAX || PyArray_DIM(q, 1) > INT_MAX) {
+        PyErr_SetString(PyExc_ValueError, "input dimensions exceed the native int interface");
+        goto fail;
+    }
+    ncol = (int)PyArray_DIM(q, 0);
+    nlev = (int)PyArray_DIM(q, 1);
+    dims[0] = ncol;
+    dims[1] = nlev;
+    out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!out) {
+        goto fail;
+    }
+
+    fullpos_gprcp_kappa_c(&ncol,
+                          &nlev,
+                          (const double *)PyArray_DATA(q),
+                          (double *)PyArray_DATA(out),
+                          &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS GPRCP kappa calculation failed with ierr=%d", ierr);
+        goto fail;
+    }
+
+    Py_XDECREF(q);
+    return (PyObject *)out;
+
+fail:
+    Py_XDECREF(q);
+    Py_XDECREF(out);
+    return NULL;
+}
+
 static PyMethodDef methods[] = {
     {"pressure_ppq", pressure_ppq, METH_VARARGS, "Interpolate scalar fields with native FULLPOS PPQ."},
     {"pressure_ppt", pressure_ppt, METH_VARARGS, "Interpolate temperature with native FULLPOS PPT."},
@@ -1036,6 +1261,8 @@ static PyMethodDef methods[] = {
     {"theta_pressures", theta_pressures, METH_VARARGS, "Compute potential-temperature target pressures with native FULLPOS GPTET/PPLTETA."},
     {"temperature_pressures", temperature_pressures, METH_VARARGS, "Compute temperature target pressures with native FULLPOS PPLTW/FPPS."},
     {"potential_vorticity_pressures", potential_vorticity_pressures, METH_VARARGS, "Compute potential-vorticity target pressures with native FULLPOS PPLTP."},
+    {"gprcp_kappa", gprcp_kappa, METH_VARARGS, "Compute R/Cp from specific humidity with native FULLPOS GPRCP."},
+    {"diagnose_potential_vorticity", diagnose_potential_vorticity, METH_VARARGS, "Diagnose model-level potential vorticity and potential temperature with native FULLPOS GPPVO."},
     {NULL, NULL, 0, NULL},
 };
 

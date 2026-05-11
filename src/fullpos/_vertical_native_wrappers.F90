@@ -903,3 +903,154 @@ subroutine fullpos_potential_vorticity_pressures_c(ncol, nlev, nout, pv_values, 
     output(:, lev) = prpres(:)
   enddo
 end subroutine fullpos_potential_vorticity_pressures_c
+
+
+subroutine fullpos_gprcp_kappa_c(ncol, nlev, q_values, kappa_values, ierr) bind(C)
+  use iso_c_binding, only: c_int, c_double
+  use parkind1, only: jpim, jprb
+  implicit none
+
+  integer(c_int), intent(in) :: ncol, nlev
+  real(c_double), intent(in) :: q_values(ncol, nlev)
+  real(c_double), intent(out) :: kappa_values(ncol, nlev)
+  integer(c_int), intent(out) :: ierr
+
+  real(kind=jprb), allocatable :: q(:,:), kappa(:,:)
+
+  interface
+    subroutine gprcp(kproma, kstart, kprof, kflev, pq, pqi, pql, pqr, pqs, pqg, &
+                     pcp, pr, pkap, pgfl, kgfltyp, ldthermact)
+      use parkind1, only: jpim, jprb
+      use yom_ygfl, only: ygfl
+      integer(kind=jpim), intent(in) :: kproma, kstart, kprof, kflev
+      real(kind=jprb), optional, intent(in) :: pq(kproma,kflev)
+      real(kind=jprb), optional, intent(in) :: pqi(kproma,kflev), pql(kproma,kflev)
+      real(kind=jprb), optional, intent(in) :: pqr(kproma,kflev), pqs(kproma,kflev)
+      real(kind=jprb), optional, intent(in) :: pqg(kproma,kflev)
+      real(kind=jprb), optional, intent(in) :: pgfl(kproma,kflev,ygfl%ndim)
+      real(kind=jprb), optional, intent(out) :: pcp(kproma,kflev), pr(kproma,kflev)
+      real(kind=jprb), optional, intent(out) :: pkap(kproma,kflev)
+      integer(kind=jpim), optional, intent(in) :: kgfltyp
+      logical, optional, intent(in) :: ldthermact
+    end subroutine gprcp
+  end interface
+
+  ierr = 0_c_int
+  if (ncol <= 0 .or. nlev <= 0) then
+    ierr = 1_c_int
+    return
+  endif
+
+  allocate(q(ncol,nlev), kappa(ncol,nlev))
+  q = q_values
+  call gprcp(ncol, 1, ncol, nlev, pq=q, pkap=kappa, ldthermact=.true.)
+  kappa_values = kappa
+end subroutine fullpos_gprcp_kappa_c
+
+
+subroutine fullpos_diagnose_potential_vorticity_c(ncol, nlev, u_values, v_values, temperature, &
+                                                  relative_vorticity, temperature_meridional_gradient, &
+                                                  temperature_zonal_gradient, surface_pressure_meridional_gradient, &
+                                                  surface_pressure_zonal_gradient, kappa_values, ak, bk, ps, coriolis, &
+                                                  potential_vorticity, potential_temperature, ierr) bind(C)
+  use iso_c_binding, only: c_int, c_double
+  use parkind1, only: jpim, jprb
+  use yomvert, only: tvab, vp00
+  implicit none
+
+  integer(c_int), intent(in) :: ncol, nlev
+  real(c_double), intent(in) :: u_values(ncol, nlev), v_values(ncol, nlev), temperature(ncol, nlev)
+  real(c_double), intent(in) :: relative_vorticity(ncol, nlev)
+  real(c_double), intent(in) :: temperature_meridional_gradient(ncol, nlev), temperature_zonal_gradient(ncol, nlev)
+  real(c_double), intent(in) :: surface_pressure_meridional_gradient(ncol), surface_pressure_zonal_gradient(ncol)
+  real(c_double), intent(in) :: kappa_values(ncol, nlev)
+  real(c_double), intent(in) :: ak(nlev + 1), bk(nlev + 1), ps(ncol), coriolis(ncol)
+  real(c_double), intent(out) :: potential_vorticity(ncol, nlev), potential_temperature(ncol, nlev)
+  integer(c_int), intent(out) :: ierr
+
+  integer(kind=jpim) :: j, k
+  type(tvab) :: vab
+  real(kind=jprb), allocatable :: presh(:,:), presf(:,:), rdelp(:,:), kappa(:,:)
+  real(kind=jprb), allocatable :: u(:,:), v(:,:), t(:,:), vort(:,:), tm(:,:), tl(:,:), spm(:), spl(:), cor(:)
+  real(kind=jprb), allocatable :: pvo(:,:), theta(:,:)
+
+  interface
+    subroutine gppvo(ydvab, kproma, kstart, kprof, kflev, presf, prdelp, pkap, prcori, &
+                     pvor, pu, pv, pt, ptm, ptl, pspm, pspl, pvo, pteta)
+      use parkind1, only: jpim, jprb
+      use yomvert, only: tvab
+      type(tvab), intent(in) :: ydvab
+      integer(kind=jpim), intent(in) :: kproma, kstart, kprof, kflev
+      real(kind=jprb), intent(in) :: presf(kproma,kflev), prdelp(kproma,kflev), pkap(kproma,kflev)
+      real(kind=jprb), intent(in) :: prcori(kproma), pvor(kproma,kflev), pu(kproma,kflev), pv(kproma,kflev)
+      real(kind=jprb), intent(in) :: pt(kproma,kflev), ptm(kproma,kflev), ptl(kproma,kflev)
+      real(kind=jprb), intent(in) :: pspm(kproma), pspl(kproma)
+      real(kind=jprb), intent(out) :: pvo(kproma,kflev), pteta(kproma,kflev)
+    end subroutine gppvo
+  end interface
+
+  ierr = 0_c_int
+  if (ncol <= 0 .or. nlev <= 1) then
+    ierr = 1_c_int
+    return
+  endif
+
+  allocate(vab%vah(0:nlev), vab%vbh(0:nlev), vab%valh(0:nlev), vab%vc(nlev), vab%vaf(0:nlev))
+  allocate(vab%vbf(0:nlev), vab%vdela(nlev), vab%vdelb(nlev))
+  allocate(presh(ncol,0:nlev), presf(ncol,nlev), rdelp(ncol,nlev), kappa(ncol,nlev))
+  allocate(u(ncol,nlev), v(ncol,nlev), t(ncol,nlev), vort(ncol,nlev), tm(ncol,nlev), tl(ncol,nlev))
+  allocate(spm(ncol), spl(ncol), cor(ncol), pvo(ncol,nlev), theta(ncol,nlev))
+
+  vp00 = 100000.0_jprb
+  do k = 0, nlev
+    vab%vah(k) = ak(k + 1)
+    vab%vbh(k) = bk(k + 1)
+    vab%valh(k) = vab%vah(k) / vp00
+  enddo
+  do k = 1, nlev
+    vab%vc(k) = vab%vah(k) * vab%vbh(k - 1) - vab%vah(k - 1) * vab%vbh(k)
+    vab%vaf(k) = 0.5_jprb * (vab%vah(k) + vab%vah(k - 1))
+    vab%vbf(k) = 0.5_jprb * (vab%vbh(k) + vab%vbh(k - 1))
+    vab%vdela(k) = vab%vah(k) - vab%vah(k - 1)
+    vab%vdelb(k) = vab%vbh(k) - vab%vbh(k - 1)
+  enddo
+  vab%vaf(0) = vab%vah(0)
+  vab%vbf(0) = vab%vbh(0)
+
+  do j = 1, ncol
+    spm(j) = surface_pressure_meridional_gradient(j)
+    spl(j) = surface_pressure_zonal_gradient(j)
+    cor(j) = coriolis(j)
+    do k = 0, nlev
+      presh(j,k) = ak(k + 1) + bk(k + 1) * ps(j)
+      if (presh(j,k) < 0.0_jprb) then
+        ierr = 2_c_int
+        return
+      endif
+      if (k > 0 .and. presh(j,k) <= 0.0_jprb) then
+        ierr = 2_c_int
+        return
+      endif
+    enddo
+    do k = 1, nlev
+      presf(j,k) = 0.5_jprb * (presh(j,k - 1) + presh(j,k))
+      if (presf(j,k) <= 0.0_jprb) then
+        ierr = 3_c_int
+        return
+      endif
+      rdelp(j,k) = 1.0_jprb / abs(presh(j,k) - presh(j,k - 1))
+      kappa(j,k) = kappa_values(j,k)
+      u(j,k) = u_values(j,k)
+      v(j,k) = v_values(j,k)
+      t(j,k) = temperature(j,k)
+      vort(j,k) = relative_vorticity(j,k)
+      tm(j,k) = temperature_meridional_gradient(j,k)
+      tl(j,k) = temperature_zonal_gradient(j,k)
+    enddo
+  enddo
+
+  call gppvo(vab, ncol, 1, ncol, nlev, presf, rdelp, kappa, cor, vort, u, v, t, tm, tl, spm, spl, pvo, theta)
+
+  potential_vorticity = pvo
+  potential_temperature = theta
+end subroutine fullpos_diagnose_potential_vorticity_c

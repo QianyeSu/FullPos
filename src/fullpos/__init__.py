@@ -22,7 +22,7 @@ from .interpolation import (
 )
 from .regridder import Regridder
 from .spectral import spectral_fit, spectral_fit_values, spectral_synthesis, spectral_synthesis_values
-from .vertical import vertical_capabilities, vertical_interpolate
+from .vertical import diagnose_potential_vorticity, vertical_capabilities, vertical_interpolate
 
 __all__ = [
     "Regridder",
@@ -31,6 +31,7 @@ __all__ = [
     "backend_info",
     "bilinear_interpolate",
     "doctor",
+    "diagnose_potential_vorticity",
     "filter_spectral_coefficients",
     "fpfilter_profile",
     "gaussian_filter_profile",

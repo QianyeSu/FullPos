@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 import xarray as xr
 
+from ..grids import GaussianGrid, gaussian_latitudes, parse_grid
 from ..metadata import append_history
 from ..native import add_native_runtime_dir
 from .pressure import (
@@ -49,14 +50,18 @@ def interpolate_to_potential_vorticity(
     hybrid_coefficients=None,
     potential_vorticity=None,
     coriolis=None,
+    source_grid: str | GaussianGrid | None = None,
+    ntrunc: int | None = None,
+    specific_humidity=None,
     keep_attrs: bool = True,
 ):
     """Interpolate fields to iso-PV surfaces with native FULLPOS.
 
-    This target currently uses the native FULLPOS ``PPLTP`` locator on a
-    provided full-level potential-vorticity field, then interpolates the
-    requested variables with the same native ``PPQ``/``PPUV``/``PPT`` kernels
-    used by the other vertical targets.
+    This target uses the native FULLPOS ``PPLTP`` locator on either a provided
+    full-level potential-vorticity field or a PV field diagnosed from
+    ``u``/``v``/``t``/``q`` with native ECTRANS + FULLPOS ``GPRCP``/``GPPVO``.
+    The requested variables are then interpolated with the same native
+    ``PPQ``/``PPUV``/``PPT`` kernels used by the other vertical targets.
     """
     request = prepare_potential_vorticity_request(
         values,
@@ -67,6 +72,10 @@ def interpolate_to_potential_vorticity(
         hybrid_coefficients=hybrid_coefficients,
         potential_vorticity=potential_vorticity,
         coriolis=coriolis,
+        source_grid=source_grid,
+        ntrunc=ntrunc,
+        specific_humidity=specific_humidity,
+        keep_attrs=keep_attrs,
     )
     if isinstance(values, xr.Dataset):
         selected = request.variables or tuple(values.data_vars)
@@ -119,14 +128,17 @@ def prepare_potential_vorticity_request(
     hybrid_coefficients=None,
     potential_vorticity=None,
     coriolis=None,
+    source_grid: str | GaussianGrid | None = None,
+    ntrunc: int | None = None,
+    specific_humidity=None,
+    keep_attrs: bool = True,
 ) -> PotentialVorticityRequest:
     """Validate and normalize an iso-PV interpolation request."""
     normalized_levels = _normalize_pv_levels(levels)
-    reference, selected, pv_reference = _validate_pv_request(
+    reference, selected = _validate_pv_request(
         values,
         variables=variables,
         chunks=chunks,
-        potential_vorticity=potential_vorticity,
     )
     hybrid_dim = _find_hybrid_dim(reference)
     assert hybrid_dim is not None
@@ -145,8 +157,20 @@ def prepare_potential_vorticity_request(
             f"expected {expected_half_levels} half levels, got {ak.size} A and {bk.size} B values"
         )
     ps = _resolve_surface_pressure(reference, surface_pressure=surface_pressure)
-    pv = pv_reference
-    corio = _resolve_coriolis(reference, hybrid_dim=hybrid_dim, coriolis=coriolis)
+    corio = _resolve_coriolis(reference, hybrid_dim=hybrid_dim, coriolis=coriolis, source_grid=source_grid)
+    pv = _resolve_pv_field(
+        values,
+        reference,
+        potential_vorticity=potential_vorticity,
+        chunks=chunks,
+        surface_pressure=ps,
+        coriolis=corio,
+        hybrid_coefficients=hybrid_coefficients,
+        source_grid=source_grid,
+        ntrunc=ntrunc,
+        specific_humidity=specific_humidity,
+        keep_attrs=keep_attrs,
+    )
     return PotentialVorticityRequest(
         levels=normalized_levels,
         hybrid_dim=hybrid_dim,
@@ -164,8 +188,7 @@ def _validate_pv_request(
     *,
     variables,
     chunks: dict[str, int] | None,
-    potential_vorticity,
-) -> tuple[xr.DataArray, tuple[str, ...] | None, xr.DataArray]:
+) -> tuple[xr.DataArray, tuple[str, ...] | None]:
     if isinstance(values, xr.Dataset):
         selected = list(values.data_vars) if variables is None else [str(v) for v in variables]
         missing = [name for name in selected if name not in values.data_vars]
@@ -180,8 +203,7 @@ def _validate_pv_request(
         reference = values
     else:
         raise TypeError("potential-vorticity interpolation currently requires xarray DataArray or Dataset input")
-    pv = _resolve_pv_field(values, reference, potential_vorticity=potential_vorticity, chunks=chunks)
-    return reference, selected, pv
+    return reference, selected
 
 
 def _resolve_pv_field(
@@ -190,6 +212,13 @@ def _resolve_pv_field(
     *,
     potential_vorticity,
     chunks: dict[str, int] | None,
+    surface_pressure: xr.DataArray,
+    coriolis: xr.DataArray,
+    hybrid_coefficients,
+    source_grid: str | GaussianGrid | None,
+    ntrunc: int | None,
+    specific_humidity,
+    keep_attrs: bool,
 ) -> xr.DataArray:
     if potential_vorticity is None:
         if isinstance(values, xr.Dataset):
@@ -200,9 +229,23 @@ def _resolve_pv_field(
         elif isinstance(values, xr.DataArray) and str(values.name or "").lower() in {"potential_vorticity", "pv"}:
             potential_vorticity = values
     if potential_vorticity is None:
+        potential_vorticity = _diagnose_pv_from_dataset(
+            values,
+            reference=reference,
+            surface_pressure=surface_pressure,
+            coriolis=coriolis,
+            chunks=chunks,
+            hybrid_coefficients=hybrid_coefficients,
+            source_grid=source_grid,
+            ntrunc=ntrunc,
+            specific_humidity=specific_humidity,
+            keep_attrs=keep_attrs,
+        )
+    if potential_vorticity is None:
         raise ValueError(
             "potential_vorticity is required to locate iso-PV surfaces; pass potential_vorticity=... "
-            "or provide a Dataset containing a 'pv' or 'potential_vorticity' variable"
+            "provide a Dataset containing a 'pv' or 'potential_vorticity' variable, or provide a Dataset "
+            "with native diagnostic inputs 'u', 'v', 't'/'temperature', and 'q'/'specific_humidity'"
         )
     if not isinstance(potential_vorticity, xr.DataArray):
         raise TypeError("potential_vorticity must be an xarray.DataArray")
@@ -213,18 +256,104 @@ def _resolve_pv_field(
     return potential_vorticity
 
 
+def _diagnose_pv_from_dataset(
+    values,
+    *,
+    reference: xr.DataArray,
+    surface_pressure: xr.DataArray,
+    coriolis: xr.DataArray,
+    chunks: dict[str, int] | None,
+    hybrid_coefficients,
+    source_grid: str | GaussianGrid | None,
+    ntrunc: int | None,
+    specific_humidity,
+    keep_attrs: bool,
+) -> xr.DataArray | None:
+    if not isinstance(values, xr.Dataset):
+        return None
+    u = _find_dataset_field(values, ("u", "eastward_wind", "u_component_of_wind"))
+    v = _find_dataset_field(values, ("v", "northward_wind", "v_component_of_wind"))
+    temperature = _find_dataset_field(values, ("t", "temperature", "air_temperature"))
+    humidity = specific_humidity if specific_humidity is not None else _find_dataset_field(values, ("q", "specific_humidity"))
+    if u is None or v is None or temperature is None or humidity is None:
+        return None
+    for name, obj in {"u": u, "v": v, "temperature": temperature}.items():
+        if obj.dims != reference.dims or obj.shape != reference.shape:
+            raise ValueError(f"automatic PV diagnostic field {name!r} must match the interpolated field dimensions and shape")
+        _validate_same_coords(reference, obj)
+    if not isinstance(humidity, xr.DataArray):
+        raise TypeError("specific_humidity must be an xarray.DataArray")
+    if humidity.dims != reference.dims or humidity.shape != reference.shape:
+        raise ValueError("automatic PV diagnostic field 'specific_humidity' must match the interpolated field dimensions and shape")
+    _validate_same_coords(reference, humidity)
+    temperature = _with_reference_attrs_for_diagnostic(temperature, reference)
+
+    from .diagnostics import diagnose_potential_vorticity
+
+    diagnostic = diagnose_potential_vorticity(
+        u=u,
+        v=v,
+        temperature=temperature,
+        surface_pressure=surface_pressure,
+        coriolis=coriolis,
+        specific_humidity=humidity,
+        source_grid=source_grid,
+        ntrunc=ntrunc,
+        chunks=chunks,
+        hybrid_coefficients=hybrid_coefficients,
+        keep_attrs=keep_attrs,
+    )
+    return diagnostic.potential_vorticity
+
+
+def _with_reference_attrs_for_diagnostic(temperature: xr.DataArray, reference: xr.DataArray) -> xr.DataArray:
+    missing = [
+        name
+        for name in ("GRIB_pv", "GRIB_gridType", "GRIB_N", "GRIB_numberOfPoints", "GRIB_pl")
+        if name in reference.attrs and name not in temperature.attrs
+    ]
+    if not missing:
+        return temperature
+    out = temperature.copy(deep=False)
+    attrs = dict(temperature.attrs)
+    for name in missing:
+        attrs[name] = reference.attrs[name]
+    out.attrs = attrs
+    return out
+
+
+def _find_dataset_field(ds: xr.Dataset, names: tuple[str, ...]) -> xr.DataArray | None:
+    normalized = {name.lower() for name in names}
+    for name in names:
+        if name in ds:
+            return ds[name]
+    for name, obj in ds.data_vars.items():
+        candidates = {
+            str(name).lower(),
+            str(obj.name or "").lower(),
+            str(obj.attrs.get("GRIB_shortName", "")).lower(),
+            str(obj.attrs.get("standard_name", "")).lower(),
+        }
+        if candidates & normalized:
+            return obj
+    return None
+
+
 def _resolve_coriolis(
     reference: xr.DataArray,
     *,
     hybrid_dim: str,
     coriolis,
+    source_grid: str | GaussianGrid | None = None,
 ) -> xr.DataArray:
     if coriolis is None:
         coriolis = _infer_coriolis_from_coords(reference)
+        if coriolis is None and source_grid is not None:
+            coriolis = _infer_coriolis_from_grid(reference, hybrid_dim=hybrid_dim, source_grid=source_grid)
         if coriolis is None:
             raise ValueError(
                 "coriolis is required when it cannot be inferred from latitude coordinates; "
-                "pass coriolis=... or provide lat/latitude coordinates"
+                "pass coriolis=..., source_grid=..., or provide lat/latitude coordinates"
             )
     if not isinstance(coriolis, xr.DataArray):
         raise TypeError("coriolis must be an xarray.DataArray")
@@ -248,6 +377,49 @@ def _infer_coriolis_from_coords(reference: xr.DataArray) -> xr.DataArray | None:
         return None
     values = 2.0 * _EARTH_OMEGA * np.sin(np.deg2rad(np.asarray(lat.values, dtype=np.float64)))
     return xr.DataArray(values, dims=lat.dims, coords=lat.coords, name="coriolis")
+
+
+def _infer_coriolis_from_grid(
+    reference: xr.DataArray,
+    *,
+    hybrid_dim: str,
+    source_grid: str | GaussianGrid,
+) -> xr.DataArray | None:
+    grid = source_grid if isinstance(source_grid, GaussianGrid) else parse_grid(str(source_grid))
+    lats = gaussian_latitudes(grid.nlat)
+    base = reference.isel({hybrid_dim: 0}, drop=True)
+    if grid.is_reduced:
+        assert grid.pl is not None
+        for dim in base.dims:
+            if base.sizes[dim] == grid.size:
+                lat_values = np.repeat(lats, np.asarray(grid.pl, dtype=np.int64))
+                coords = {dim: base.coords[dim]} if dim in base.coords else None
+                return xr.DataArray(
+                    2.0 * _EARTH_OMEGA * np.sin(np.deg2rad(lat_values)),
+                    dims=(dim,),
+                    coords=coords,
+                    name="coriolis",
+                )
+        return None
+    lat_dim = None
+    for candidate in ("latitude", "lat"):
+        if candidate in base.dims and base.sizes[candidate] == grid.nlat:
+            lat_dim = candidate
+            break
+    if lat_dim is None:
+        for dim in base.dims:
+            if base.sizes[dim] == grid.nlat:
+                lat_dim = dim
+                break
+    if lat_dim is None:
+        return None
+    coords = {lat_dim: base.coords[lat_dim]} if lat_dim in base.coords else None
+    return xr.DataArray(
+        2.0 * _EARTH_OMEGA * np.sin(np.deg2rad(lats)),
+        dims=(lat_dim,),
+        coords=coords,
+        name="coriolis",
+    )
 
 
 def _normalize_pv_levels(levels) -> np.ndarray:

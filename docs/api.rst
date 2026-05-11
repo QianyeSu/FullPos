@@ -22,6 +22,7 @@ Common imports:
        spectral_filter,
        generic_spectral_filter,
        horizontal_interpolate,
+       diagnose_potential_vorticity,
        vertical_interpolate,
    )
 

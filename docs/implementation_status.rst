@@ -48,9 +48,14 @@ Completed
 * Native temperature target pressures through vendored FULLPOS ``PPLTW`` and
   ``FPPS``, followed by the same native ``PPQ``/``PPUV``/``PPT`` interpolation
   kernels.
-* Native iso-PV target pressure lookup through FULLPOS ``PPLTP`` on a provided
-  PV field and Coriolis input, followed by the same native
-  ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
+* Native iso-PV target pressure lookup through FULLPOS ``PPLTP`` on either a
+  provided PV field or an automatically diagnosed native ``GPPVO`` PV field,
+  followed by the same native ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
+* Native model-level potential-vorticity and potential-temperature diagnostic
+  through FULLPOS ``GPPVO``. Missing relative vorticity, temperature
+  gradients, surface-pressure gradients, and ``kappa`` (``R/Cp``) are now
+  prepared natively through ECTRANS and FULLPOS ``GPRCP`` when the wrapper is
+  given ``u``/``v``/``t``/``q`` plus grid metadata.
 * Native dependency diagnostics through ``backend_info`` and ``doctor``.
 
 Partially Complete
@@ -74,9 +79,10 @@ Partially Complete
   vendored FULLPOS/OpenIFS source set does not include a usable ``PPLTEMP``
   implementation. This is native Fortran, but not the exact missing
   ``PPLTEMP`` branch from full ``POS``.
-* ``target="potential_vorticity"`` currently uses native ``PPLTP`` on a
-  provided PV field and Coriolis input. The full automatic ``GPPVO`` diagnostic
-  from ``u``/``v``/``t`` and geometry inputs is still pending.
+* ``target="potential_vorticity"`` uses native ``PPLTP`` and can now
+  auto-diagnose the required PV field through native ECTRANS + FULLPOS
+  ``GPRCP``/``GPPVO`` when the input Dataset contains ``u``/``v``/``t``/``q``
+  and Gaussian grid metadata.
 * Development-only Skyborn compiled reference checks remain available for
   comparison, including correct ``p0=1`` handling for ERA5 ``ap``
   coefficients.
@@ -89,8 +95,6 @@ Not Complete
 * FULLPOS land/sea-mask weighted SST interpolation.
 * Complete ``POS/APACHE``/``LESCALE`` vertical workflow, including the
   ``CDCONF='M'`` model-level branch.
-* Full automatic ``GPPVO``-based potential-vorticity diagnostic from
-  ``u``/``v``/``t`` and geometry inputs.
 * Vertical interpolation to height, eta, and related levels.
 * Surface-field special FULLPOS processing.
 * Stretched-geometry filtering.

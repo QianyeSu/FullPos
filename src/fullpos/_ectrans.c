@@ -703,6 +703,275 @@ fail:
     return NULL;
 }
 
+static PyObject *ectrans_vector_scalar_diagnostics(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"u", "v", "scalars", "pl", "trunc", NULL};
+    PyObject *u_obj = NULL;
+    PyObject *v_obj = NULL;
+    PyObject *scalars_obj = NULL;
+    PyObject *pl_obj = NULL;
+    int trunc = -1;
+
+    PyArrayObject *u = NULL;
+    PyArrayObject *v = NULL;
+    PyArrayObject *scalars = NULL;
+    PyArrayObject *pl = NULL;
+    PyArrayObject *vort_out = NULL;
+    PyArrayObject *div_out = NULL;
+    PyArrayObject *scalar_ns_out = NULL;
+    PyArrayObject *scalar_ew_out = NULL;
+
+    struct Trans_t trans;
+    int trans_ready = 0;
+    int *nfrom = NULL;
+    int *nto = NULL;
+
+    int u_ndim = 0;
+    int scalar_ndim = 0;
+    int nvordiv = 0;
+    int nscalar = 0;
+    int input_nfld = 0;
+    int output_nfld = 0;
+    npy_intp input_points = 0;
+    npy_intp scalar_points = 0;
+
+    double *rgpg_in = NULL;
+    double *rgp_in = NULL;
+    double *rspvor = NULL;
+    double *rspdiv = NULL;
+    double *rspscalar = NULL;
+    double *rgp_out = NULL;
+    double *rgpg_out = NULL;
+
+    (void)self;
+    memset(&trans, 0, sizeof(trans));
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "OOOOi", kwlist, &u_obj, &v_obj, &scalars_obj, &pl_obj, &trunc)) {
+        return NULL;
+    }
+    if (trunc < 0) {
+        PyErr_SetString(PyExc_ValueError, "trunc must be non-negative");
+        return NULL;
+    }
+
+    u = (PyArrayObject *)PyArray_FROM_OTF(u_obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
+    v = (PyArrayObject *)PyArray_FROM_OTF(v_obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
+    scalars = (PyArrayObject *)PyArray_FROM_OTF(scalars_obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
+    pl = (PyArrayObject *)PyArray_FROM_OTF(pl_obj, NPY_INT, NPY_ARRAY_IN_ARRAY);
+    if (!u || !v || !scalars || !pl) {
+        goto fail;
+    }
+
+    u_ndim = PyArray_NDIM(u);
+    scalar_ndim = PyArray_NDIM(scalars);
+    if ((u_ndim != 1 && u_ndim != 2) ||
+        PyArray_NDIM(v) != u_ndim ||
+        (scalar_ndim != 1 && scalar_ndim != 2) ||
+        PyArray_NDIM(pl) != 1) {
+        PyErr_SetString(PyExc_ValueError, "u/v/scalars must be 1D or 2D arrays; pl must be a 1D array");
+        goto fail;
+    }
+    if (u_ndim == 1) {
+        nvordiv = 1;
+        input_points = PyArray_DIM(u, 0);
+        if (PyArray_DIM(v, 0) != input_points) {
+            PyErr_SetString(PyExc_ValueError, "v must have the same shape as u");
+            goto fail;
+        }
+    } else {
+        if (PyArray_DIM(u, 0) > INT_MAX) {
+            PyErr_SetString(PyExc_ValueError, "too many vector fields for TRANSI int interface");
+            goto fail;
+        }
+        nvordiv = (int)PyArray_DIM(u, 0);
+        input_points = PyArray_DIM(u, 1);
+        if (PyArray_DIM(v, 0) != PyArray_DIM(u, 0) || PyArray_DIM(v, 1) != input_points) {
+            PyErr_SetString(PyExc_ValueError, "v must have the same shape as u");
+            goto fail;
+        }
+    }
+    if (scalar_ndim == 1) {
+        nscalar = 1;
+        scalar_points = PyArray_DIM(scalars, 0);
+    } else {
+        if (PyArray_DIM(scalars, 0) > INT_MAX) {
+            PyErr_SetString(PyExc_ValueError, "too many scalar fields for TRANSI int interface");
+            goto fail;
+        }
+        nscalar = (int)PyArray_DIM(scalars, 0);
+        scalar_points = PyArray_DIM(scalars, 1);
+    }
+    if (nvordiv <= 0 || nscalar <= 0) {
+        PyErr_SetString(PyExc_ValueError, "at least one vector and one scalar field are required");
+        goto fail;
+    }
+    if (scalar_points != input_points) {
+        PyErr_SetString(PyExc_ValueError, "scalars must have the same point count as u/v");
+        goto fail;
+    }
+    if (nvordiv > (INT_MAX - nscalar) / 4) {
+        PyErr_SetString(PyExc_ValueError, "too many diagnostic fields for TRANSI int interface");
+        goto fail;
+    }
+    input_nfld = 2 * nvordiv + nscalar;
+    output_nfld = 4 * nvordiv + 3 * nscalar;
+
+    if (ensure_native_initialized() != 0) {
+        goto fail;
+    }
+    if (setup_transform(&trans, pl, trunc) != 0) {
+        goto fail;
+    }
+    trans_ready = 1;
+    if ((size_t)input_points != (size_t)trans.ngptotg) {
+        PyErr_Format(
+            PyExc_ValueError,
+            "u/v/scalars have %zd points per field, grid expects %d",
+            input_points,
+            trans.ngptotg);
+        goto fail;
+    }
+
+    rgpg_in = (double *)calloc((size_t)input_nfld * (size_t)trans.ngptotg, sizeof(double));
+    rgp_in = (double *)calloc((size_t)input_nfld * (size_t)trans.ngptot, sizeof(double));
+    rspvor = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2, sizeof(double));
+    rspdiv = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2, sizeof(double));
+    rspscalar = (double *)calloc((size_t)nscalar * (size_t)trans.nspec2, sizeof(double));
+    rgp_out = (double *)calloc((size_t)output_nfld * (size_t)trans.ngptot, sizeof(double));
+    rgpg_out = (double *)calloc((size_t)output_nfld * (size_t)trans.ngptotg, sizeof(double));
+    nfrom = (int *)malloc((size_t)input_nfld * sizeof(int));
+    nto = (int *)malloc((size_t)output_nfld * sizeof(int));
+    if (!rgpg_in || !rgp_in || !rspvor || !rspdiv || !rspscalar || !rgp_out || !rgpg_out || !nfrom || !nto) {
+        PyErr_NoMemory();
+        goto fail;
+    }
+    for (int i = 0; i < input_nfld; ++i) {
+        nfrom[i] = 1;
+    }
+    for (int i = 0; i < output_nfld; ++i) {
+        nto[i] = 1;
+    }
+
+    {
+        const double *u_data = (const double *)PyArray_DATA(u);
+        const double *v_data = (const double *)PyArray_DATA(v);
+        const double *scalar_data = (const double *)PyArray_DATA(scalars);
+        size_t points = (size_t)input_points;
+        for (int f = 0; f < nvordiv; ++f) {
+            memcpy(rgpg_in + (size_t)f * points, u_data + (size_t)f * points, points * sizeof(double));
+            memcpy(rgpg_in + (size_t)(nvordiv + f) * points, v_data + (size_t)f * points, points * sizeof(double));
+        }
+        for (int f = 0; f < nscalar; ++f) {
+            memcpy(rgpg_in + (size_t)(2 * nvordiv + f) * points, scalar_data + (size_t)f * points, points * sizeof(double));
+        }
+    }
+
+    {
+        struct DistGrid_t distgrid = new_distgrid(&trans);
+        distgrid.nfrom = nfrom;
+        distgrid.rgpg = rgpg_in;
+        distgrid.rgp = rgp_in;
+        distgrid.nfld = input_nfld;
+        CHECK_TRANS(trans_distgrid(&distgrid));
+    }
+
+    {
+        struct DirTrans_t dirtrans = new_dirtrans(&trans);
+        dirtrans.nvordiv = nvordiv;
+        dirtrans.nscalar = nscalar;
+        dirtrans.rgp = rgp_in;
+        dirtrans.rspvor = rspvor;
+        dirtrans.rspdiv = rspdiv;
+        dirtrans.rspscalar = rspscalar;
+        CHECK_TRANS(trans_dirtrans(&dirtrans));
+    }
+
+    {
+        struct InvTrans_t invtrans = new_invtrans(&trans);
+        invtrans.nvordiv = nvordiv;
+        invtrans.nscalar = nscalar;
+        invtrans.lvordivgp = 1;
+        invtrans.lscalarders = 1;
+        invtrans.luvder_EW = 0;
+        invtrans.rspvor = rspvor;
+        invtrans.rspdiv = rspdiv;
+        invtrans.rspscalar = rspscalar;
+        invtrans.rgp = rgp_out;
+        CHECK_TRANS(trans_invtrans(&invtrans));
+    }
+
+    {
+        struct GathGrid_t gathgrid = new_gathgrid(&trans);
+        gathgrid.rgp = rgp_out;
+        gathgrid.rgpg = rgpg_out;
+        gathgrid.nfld = output_nfld;
+        gathgrid.nto = nto;
+        CHECK_TRANS(trans_gathgrid(&gathgrid));
+    }
+
+    {
+        npy_intp vector_dims[2] = {(npy_intp)nvordiv, input_points};
+        npy_intp scalar_dims[2] = {(npy_intp)nscalar, input_points};
+        size_t points = (size_t)input_points;
+        int scalar_ns_offset = 4 * nvordiv + nscalar;
+        int scalar_ew_offset = 4 * nvordiv + 2 * nscalar;
+
+        vort_out = (PyArrayObject *)PyArray_SimpleNew(2, vector_dims, NPY_DOUBLE);
+        div_out = (PyArrayObject *)PyArray_SimpleNew(2, vector_dims, NPY_DOUBLE);
+        scalar_ns_out = (PyArrayObject *)PyArray_SimpleNew(2, scalar_dims, NPY_DOUBLE);
+        scalar_ew_out = (PyArrayObject *)PyArray_SimpleNew(2, scalar_dims, NPY_DOUBLE);
+        if (!vort_out || !div_out || !scalar_ns_out || !scalar_ew_out) {
+            goto fail;
+        }
+        memcpy(PyArray_DATA(vort_out), rgpg_out, (size_t)nvordiv * points * sizeof(double));
+        memcpy(PyArray_DATA(div_out), rgpg_out + (size_t)nvordiv * points, (size_t)nvordiv * points * sizeof(double));
+        memcpy(PyArray_DATA(scalar_ns_out), rgpg_out + (size_t)scalar_ns_offset * points, (size_t)nscalar * points * sizeof(double));
+        memcpy(PyArray_DATA(scalar_ew_out), rgpg_out + (size_t)scalar_ew_offset * points, (size_t)nscalar * points * sizeof(double));
+    }
+
+    CHECK_TRANS(trans_delete(&trans));
+    trans_ready = 0;
+
+    free(rgpg_in);
+    free(rgp_in);
+    free(rspvor);
+    free(rspdiv);
+    free(rspscalar);
+    free(rgp_out);
+    free(rgpg_out);
+    free(nfrom);
+    free(nto);
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(scalars);
+    Py_XDECREF(pl);
+    return Py_BuildValue("NNNN", (PyObject *)vort_out, (PyObject *)div_out, (PyObject *)scalar_ns_out, (PyObject *)scalar_ew_out);
+
+fail:
+    if (trans_ready) {
+        trans_delete(&trans);
+    }
+    free(rgpg_in);
+    free(rgp_in);
+    free(rspvor);
+    free(rspdiv);
+    free(rspscalar);
+    free(rgp_out);
+    free(rgpg_out);
+    free(nfrom);
+    free(nto);
+    Py_XDECREF(vort_out);
+    Py_XDECREF(div_out);
+    Py_XDECREF(scalar_ns_out);
+    Py_XDECREF(scalar_ew_out);
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(scalars);
+    Py_XDECREF(pl);
+    return NULL;
+}
+
 static PyArrayObject *as_fortran_array(PyObject *obj, int typenum, int min_ndim, int max_ndim)
 {
     PyArrayObject *arr = (PyArrayObject *)PyArray_FROM_OTF(obj, typenum, NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
@@ -1202,6 +1471,8 @@ static PyMethodDef EctransMethods[] = {
      "Regrid one global Gaussian scalar field through ECTRANS spectral coefficients."},
     {"synthesis", (PyCFunction)ectrans_synthesis, METH_VARARGS | METH_KEYWORDS,
      "Transform ECTRANS spectral coefficients to global Gaussian scalar field(s)."},
+    {"vector_scalar_diagnostics", (PyCFunction)ectrans_vector_scalar_diagnostics, METH_VARARGS | METH_KEYWORDS,
+     "Diagnose vorticity and scalar horizontal derivatives with native ECTRANS transforms."},
     {NULL, NULL, 0, NULL},
 };
 

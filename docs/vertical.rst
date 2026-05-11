@@ -34,6 +34,10 @@ Current implementation status:
 * ``target="potential_vorticity"`` uses native ``PPLTP`` on a provided PV
   field and Coriolis input, then interpolates fields through the same native
   ``PPQ``/``PPUV``/``PPT`` kernels.
+* ``diagnose_potential_vorticity`` exposes the native FULLPOS ``GPPVO`` model
+  level diagnostic. It can now auto-prepare relative vorticity, horizontal
+  gradients, ``kappa`` from specific humidity, and Coriolis from Gaussian
+  latitude metadata when those inputs are not supplied explicitly.
 * The pressure-level request shape now validates ``levels``, dataset
   ``variables``, xarray ``chunks``, and hybrid/model-level dimensions.
 * Pressure requests currently require surface pressure input
@@ -174,26 +178,72 @@ is not yet the exact missing ``PPLTEMP`` branch from full ``POS``.
 Potential-vorticity Target
 --------------------------
 
+When opening ERA5/OpenIFS model-level GRIB files with ``cfgrib``, request the
+hybrid A/B coefficient array explicitly:
+
+.. code-block:: python
+
+   ds = xr.open_dataset(
+       "model-level.grib2",
+       engine="cfgrib",
+       backend_kwargs={"read_keys": ["pv"]},
+   )
+
+The resulting data variables should contain ``GRIB_pv`` in their attrs. FULLPOS
+needs those coefficients for every vertical target.
+
 Use ``target="potential_vorticity"`` for iso-PV surfaces. This currently
-requires a supplied full-level PV field and a Coriolis field or latitude
-coordinates:
+accepts either a supplied full-level PV field or a Dataset that contains the
+native diagnostic inputs ``u``, ``v``, ``t``/``temperature``, and
+``q``/``specific_humidity``. In the second case the wrapper first diagnoses
+PV with ECTRANS + FULLPOS ``GPRCP``/``GPPVO`` and then locates the iso-PV
+surface with ``PPLTP``:
 
 .. code-block:: python
 
    out = vertical_interpolate(
        ds,
        target="potential_vorticity",
-       levels=[2.0, 4.0, 6.0],
-       variables=["t", "u", "v"],
+       levels=[2.0e-6, 4.0e-6, 6.0e-6],
+       variables=["t", "u", "v", "q"],
        surface_pressure=surface_ds["sp"],
-       potential_vorticity=ds["pv"],
-       coriolis=ds["coriolis"],
+       source_grid="O320",
+       chunks={"time": 1},
    )
 
-The native path uses FULLPOS ``PPLTP`` to locate each iso-PV surface pressure,
-then reuses the same native ``PPQ``/``PPUV``/``PPT`` kernels for
-interpolation. The full automatic ``GPPVO`` diagnostic from ``u``/``v``/``t``
-and geometry inputs is still a separate step.
+When ``potential_vorticity=...`` is supplied explicitly, the wrapper skips the
+diagnostic step and uses that field directly. A Coriolis field may be supplied
+with ``coriolis=...``; otherwise it is inferred from latitude coordinates or
+from ``source_grid`` for supported Gaussian grids. After ``PPLTP`` locates
+each iso-PV surface pressure, the wrapper reuses the same native
+``PPQ``/``PPUV``/``PPT`` kernels for interpolation.
+
+Potential-vorticity Diagnostic
+------------------------------
+
+Use ``diagnose_potential_vorticity`` when the goal is to compute model-level
+PV and theta with native FULLPOS ``GPPVO`` before using
+``target="potential_vorticity"``:
+
+.. code-block:: python
+
+   from fullpos import diagnose_potential_vorticity
+
+   diag = diagnose_potential_vorticity(
+       u=ds["u"],
+       v=ds["v"],
+       temperature=ds["t"],
+       surface_pressure=surface_ds["sp"],
+       specific_humidity=ds["q"],
+       source_grid="N4",
+   )
+
+The numerical diagnostic path is native Fortran ``GPPVO``. When you only pass
+``u``, ``v``, ``temperature``, ``surface_pressure``, and ``specific_humidity``,
+the wrapper now prepares the missing native inputs through ECTRANS and
+FULLPOS ``GPRCP``. Explicit ``relative_vorticity`` / gradient / ``kappa``
+inputs still override the automatic preparation path, and ``coriolis`` is
+derived automatically from Gaussian latitude metadata when it is not supplied.
 
 Input validation helper
 -----------------------
