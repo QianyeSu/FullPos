@@ -51,6 +51,9 @@ Completed
 * Native iso-PV target pressure lookup through FULLPOS ``PPLTP`` on either a
   provided PV field or an automatically diagnosed native ``GPPVO`` PV field,
   followed by the same native ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
+* Native eta/model-level-index target pressure lookup through FULLPOS
+  ``PPLETA``/``GPHPRE``, followed by the same native
+  ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
 * Native model-level potential-vorticity and potential-temperature diagnostic
   through FULLPOS ``GPPVO``. Missing relative vorticity, temperature
   gradients, surface-pressure gradients, and ``kappa`` (``R/Cp``) are now
@@ -83,6 +86,9 @@ Partially Complete
   auto-diagnose the required PV field through native ECTRANS + FULLPOS
   ``GPRCP``/``GPPVO`` when the input Dataset contains ``u``/``v``/``t``/``q``
   and Gaussian grid metadata.
+* ``target="eta"`` currently follows the native ``PPLETA`` convention where
+  requested levels are integer eta/model-level indexes. It is not a continuous
+  0..1 sigma-coordinate interpolation API.
 * Development-only Skyborn compiled reference checks remain available for
   comparison, including correct ``p0=1`` handling for ERA5 ``ap``
   coefficients.
@@ -95,7 +101,7 @@ Not Complete
 * FULLPOS land/sea-mask weighted SST interpolation.
 * Complete ``POS/APACHE``/``LESCALE`` vertical workflow, including the
   ``CDCONF='M'`` model-level branch.
-* Vertical interpolation to height, eta, and related levels.
+* Vertical interpolation to height and flight-level related levels.
 * Surface-field special FULLPOS processing.
 * Stretched-geometry filtering.
 * Post-processing level-specific filtering.

@@ -678,6 +678,103 @@ subroutine fullpos_hybrid_pressure_ppt_c(ncol, nlev, nout, values, ak, bk, ps, t
 end subroutine fullpos_hybrid_pressure_ppt_c
 
 
+subroutine fullpos_eta_pressures_c(ncol, nlev, nout, ak, bk, ps, eta_levels, output, ierr) bind(C)
+  use iso_c_binding, only: c_int, c_double
+  use parkind1, only: jpim, jprb
+  use yomcver, only: tcver
+  use yomvert, only: tvab, vp00, toppres
+  implicit none
+
+  integer(c_int), intent(in) :: ncol, nlev, nout
+  real(c_double), intent(in) :: ak(nlev + 1), bk(nlev + 1), ps(ncol), eta_levels(nout)
+  real(c_double), intent(out) :: output(ncol, nout)
+  integer(c_int), intent(out) :: ierr
+
+  integer(kind=jpim) :: j, k, ilev
+  type(tvab) :: vab
+  type(tcver) :: cver
+  real(kind=jprb), allocatable :: levels(:), surface(:)
+  real(kind=jprb), allocatable :: presf(:,:), preshb(:,:), presht(:,:)
+
+  interface
+    subroutine ppleta(ydvab, ydcver, kproma, kst, knd, koplev, pxlev, ps, presf, preshb, presht)
+      use parkind1, only: jpim, jprb
+      use yomcver, only: tcver
+      use yomvert, only: tvab
+      type(tvab), intent(in) :: ydvab
+      type(tcver), intent(in) :: ydcver
+      integer(kind=jpim), intent(in) :: kproma, kst, knd, koplev
+      real(kind=jprb), intent(in) :: pxlev(koplev), ps(kproma)
+      real(kind=jprb), intent(out) :: presf(kproma,koplev), preshb(kproma,koplev), presht(kproma,koplev)
+    end subroutine ppleta
+  end interface
+
+  ierr = 0_c_int
+  if (ncol <= 0 .or. nlev <= 1 .or. nout <= 0) then
+    ierr = 1_c_int
+    return
+  endif
+
+  allocate(vab%vah(0:nlev), vab%vbh(0:nlev), vab%valh(0:nlev), vab%vc(nlev), vab%vaf(0:nlev))
+  allocate(vab%vbf(0:nlev), vab%vdela(nlev), vab%vdelb(nlev))
+  allocate(levels(nout), surface(ncol), presf(ncol,nout), preshb(ncol,nout), presht(ncol,nout))
+
+  vp00 = 100000.0_jprb
+  toppres = 0.1_jprb
+  cver%laprxpk = .true.
+  cver%ndlnpr = 0
+  cver%rhydr0 = log(2.0_jprb)
+  cver%lvertfe = .false.
+
+  do k = 0, nlev
+    vab%vah(k) = ak(k + 1)
+    vab%vbh(k) = bk(k + 1)
+    vab%valh(k) = vab%vah(k) / vp00
+  enddo
+  vab%vaf(0) = vab%vah(0)
+  vab%vbf(0) = vab%vbh(0)
+  do k = 1, nlev
+    vab%vc(k) = vab%vah(k) * vab%vbh(k - 1) - vab%vah(k - 1) * vab%vbh(k)
+    vab%vaf(k) = 0.5_jprb * (vab%vah(k) + vab%vah(k - 1))
+    vab%vbf(k) = 0.5_jprb * (vab%vbh(k) + vab%vbh(k - 1))
+    vab%vdela(k) = vab%vah(k) - vab%vah(k - 1)
+    vab%vdelb(k) = vab%vbh(k) - vab%vbh(k - 1)
+  enddo
+
+  do j = 1, ncol
+    if (ps(j) <= 0.0_c_double) then
+      ierr = 2_c_int
+      return
+    endif
+    surface(j) = ps(j)
+  enddo
+  do k = 1, nout
+    ilev = int(eta_levels(k), kind=jpim)
+    if (ilev < 1 .or. ilev > nlev) then
+      ierr = 3_c_int
+      return
+    endif
+    if (abs(eta_levels(k) - real(ilev, kind=c_double)) > 1.0e-9_c_double) then
+      ierr = 4_c_int
+      return
+    endif
+    levels(k) = real(ilev, kind=jprb)
+  enddo
+
+  call ppleta(vab, cver, ncol, 1, ncol, nout, levels, surface, presf, preshb, presht)
+
+  do k = 1, nout
+    do j = 1, ncol
+      if (presf(j,k) <= 0.0_jprb) then
+        ierr = 5_c_int
+        return
+      endif
+      output(j,k) = presf(j,k)
+    enddo
+  enddo
+end subroutine fullpos_eta_pressures_c
+
+
 subroutine fullpos_theta_pressures_c(ncol, nlev, nout, temperature, ak, bk, ps, theta_levels, output, ierr) bind(C)
   use iso_c_binding, only: c_int, c_double
   use parkind1, only: jpim, jprb

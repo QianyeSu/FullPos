@@ -34,6 +34,9 @@ Current implementation status:
 * ``target="potential_vorticity"`` uses native ``PPLTP`` on a provided PV
   field and Coriolis input, then interpolates fields through the same native
   ``PPQ``/``PPUV``/``PPT`` kernels.
+* ``target="eta"`` uses native ``PPLETA``/``GPHPRE`` to compute target
+  pressures for integer FULLPOS eta/model-level indexes, then interpolates
+  fields through the same native ``PPQ``/``PPUV``/``PPT`` kernels.
 * ``diagnose_potential_vorticity`` exposes the native FULLPOS ``GPPVO`` model
   level diagnostic. It can now auto-prepare relative vorticity, horizontal
   gradients, ``kappa`` from specific humidity, and Coriolis from Gaussian
@@ -51,6 +54,7 @@ Current implementation status:
   routines ``PPINIT``, ``PPFLEV``, ``PPQ``, ``PPUV``, ``PPT``, and ``PPSTA``.
   The potential-temperature target path also calls ``GPTET`` and ``PPLTETA``.
   The temperature target path calls ``PPLTW``, ``FPPS``, and ``PPPMER``.
+  The eta target path calls ``PPLETA`` and ``GPHPRE``.
 
 Native FULLPOS source boundary
 ------------------------------
@@ -244,6 +248,28 @@ the wrapper now prepares the missing native inputs through ECTRANS and
 FULLPOS ``GPRCP``. Explicit ``relative_vorticity`` / gradient / ``kappa``
 inputs still override the automatic preparation path, and ``coriolis`` is
 derived automatically from Gaussian latitude metadata when it is not supplied.
+
+Eta Target
+----------
+
+Use ``target="eta"`` for FULLPOS eta/model-level-index output. In the
+OpenIFS/FULLPOS ``PPLETA`` interface, ``levels`` are 1-based integer indexes of
+the output eta system, not arbitrary continuous sigma values:
+
+.. code-block:: python
+
+   out = vertical_interpolate(
+       ds,
+       target="eta",
+       levels=[1, 10, 50, 100, 137],
+       variables=["t", "u", "v", "q"],
+       chunks={"time": 1, "values": 10000},
+       surface_pressure=surface_ds["sp"],
+   )
+
+The wrapper computes target pressures with native ``PPLETA``/``GPHPRE`` and
+then reuses native ``PPQ``/``PPUV``/``PPT`` for field interpolation. The output
+dimension is named ``eta`` and stores the requested integer indexes.
 
 Input validation helper
 -----------------------

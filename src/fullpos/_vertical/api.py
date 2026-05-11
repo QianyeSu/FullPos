@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from ..errors import FullposNotImplementedError
 from .common import SUPPORTED_VERTICAL_TARGETS, normalize_vertical_target
+from .eta import interpolate_to_eta
 from .model_level import interpolate_to_model_levels
 from .potential_temperature import interpolate_to_potential_temperature
 from .potential_vorticity import interpolate_to_potential_vorticity
@@ -38,6 +39,10 @@ def vertical_interpolate(*args, target: str, **kwargs):
         if not args and "values" not in kwargs:
             raise TypeError("vertical interpolation target 'potential_vorticity' requires values input")
         return interpolate_to_potential_vorticity(*args, **kwargs)
+    if normalized == "eta":
+        if not args and "values" not in kwargs:
+            raise TypeError("vertical interpolation target 'eta' requires values input")
+        return interpolate_to_eta(*args, **kwargs)
     raise FullposNotImplementedError(
         f"vertical interpolation target {normalized!r} is planned but not implemented"
     )
@@ -51,4 +56,5 @@ def vertical_capabilities() -> dict[str, str]:
     capabilities["pressure"] = "native"
     capabilities["temperature"] = "native_pp_chain"
     capabilities["potential_vorticity"] = "native_ppltp"
+    capabilities["eta"] = "native_ppleta"
     return capabilities

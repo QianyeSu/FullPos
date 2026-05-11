@@ -20,6 +20,7 @@ module yomcst
   real(kind=jprb) :: rd = 287.0596736665907_jprb
   real(kind=jprb) :: rv = 461.5249933083879_jprb
   real(kind=jprb) :: rcpd = 3.5_jprb * 287.0596736665907_jprb
+  real(kind=jprb) :: rcvd = 2.5_jprb * 287.0596736665907_jprb
   real(kind=jprb) :: rcpv = 4.0_jprb * 461.5249933083879_jprb
   real(kind=jprb) :: rcw = 4218.0_jprb
   real(kind=jprb) :: rcs = 2106.0_jprb
@@ -142,6 +143,71 @@ module yomct0
   logical :: loldpp = .false.
 end module yomct0
 
+module yomcver
+  use parkind1, only: jpim, jprb
+  implicit none
+  type tcver
+    logical :: laprxpk = .true.
+    integer(kind=jpim) :: ndlnpr = 0
+    real(kind=jprb) :: rhydr0 = 0.6931471805599453_jprb
+    logical :: lregeta = .false.
+    logical :: lvfe_regeta = .false.
+    integer(kind=jpim) :: nvsch = 0
+    integer(kind=jpim) :: nvfe_type = 0
+    integer(kind=jpim) :: nvfe_order = 0
+    integer(kind=jpim) :: nvfe_intbc = 0
+    integer(kind=jpim) :: nvfe_derbc = 0
+    integer(kind=jpim) :: nvfe_internals = 0
+    integer(kind=jpim) :: nvfe_bc = 0
+    logical :: lvertfe = .false.
+    logical :: lvfe_lapl = .false.
+    logical :: lvfe_lapl_bc = .false.
+    logical :: lvfe_lapl_tbc = .false.
+    logical :: lvfe_lapl_bbc = .false.
+    logical :: lvfe_lapl2pi = .false.
+    real(kind=jprb) :: rlapl2pi = 0.0_jprb
+    logical :: lvfe_x_term = .false.
+    logical :: lvfe_z_term = .false.
+    logical :: lvfe_gw = .false.
+    logical :: lvfe_delnhpre = .false.
+    logical :: lvfe_gwmpa = .false.
+    logical :: lvfe_centri = .false.
+    logical :: lvfe_cheb = .false.
+    real(kind=jprb) :: rvfe_centri = 0.0_jprb
+    real(kind=jprb) :: rvfe_alpha = 0.0_jprb
+    real(kind=jprb) :: rvfe_beta = 0.0_jprb
+    real(kind=jprb) :: rvfe_knot_stretch = 0.0_jprb
+    logical :: lvfe_approx = .false.
+    logical :: lvfe_ecmwf = .false.
+    logical :: lvfe_lapl_half = .false.
+    logical :: lvfe_fix_order = .false.
+    logical :: lvfe_gw_half = .false.
+    logical :: lvfe_maximas = .false.
+    logical :: lvfe_verbose = .false.
+    logical :: lvfe_normalize = .false.
+    logical :: ldyn_analysis_stability = .false.
+    real(kind=jprb) :: rmindeta = 0.0_jprb
+    real(kind=jprb) :: rfac1 = 0.0_jprb
+    real(kind=jprb) :: rfac2 = 0.0_jprb
+  end type tcver
+end module yomcver
+
+module intdyn_mod
+  use parkind1, only: jpim
+  implicit none
+  type txyb
+    integer(kind=jpim) :: m_delp = 1
+    integer(kind=jpim) :: m_rdelp = 2
+    integer(kind=jpim) :: m_lnpr = 3
+    integer(kind=jpim) :: m_alph = 4
+    integer(kind=jpim) :: m_rtgr = 5
+    integer(kind=jpim) :: m_rpre = 6
+    integer(kind=jpim) :: m_rpp = 7
+    integer(kind=jpim) :: ndim = 7
+  end type txyb
+  type(txyb) :: yytxyb
+end module intdyn_mod
+
 module yomppvi
   use parkind1, only: jprb
   implicit none
@@ -163,6 +229,7 @@ module yomvert
   use parkind1, only: jprb
   implicit none
   real(kind=jprb) :: vp00 = 100000.0_jprb
+  real(kind=jprb) :: toppres = 0.1_jprb
   type tvab
     real(kind=jprb), allocatable :: valh(:)
     real(kind=jprb), allocatable :: vbh(:)

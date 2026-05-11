@@ -23,6 +23,7 @@ def test_vertical_capabilities_reports_native_pressure_target() -> None:
     assert capabilities["potential_vorticity"] == "native_ppltp"
     assert capabilities["pressure"] == "native"
     assert capabilities["temperature"] == "native_pp_chain"
+    assert capabilities["eta"] == "native_ppleta"
 
 
 def test_pressure_vertical_interpolate_rejects_missing_levels() -> None:
@@ -313,6 +314,78 @@ def test_native_hybrid_pressure_matches_column_pressure_targets() -> None:
     by_hybrid = _vertical_native.hybrid_pressure_ppq(values, ak, bk, ps, target_ak, target_bk)
 
     np.testing.assert_allclose(by_hybrid, by_column)
+
+
+def test_native_eta_pressures_match_fullpos_model_level_indexes() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([0.0, 20000.0, 60000.0, 0.0], dtype=np.float64)
+    bk = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    ps = np.array([90000.0, 95000.0], dtype=np.float64)
+    levels = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+
+    out = _vertical_native.eta_pressures(ak, bk, ps, levels)
+
+    expected = np.array([[10000.0, 40000.0, 75000.0], [10000.0, 40000.0, 77500.0]], dtype=np.float64)
+    np.testing.assert_allclose(out, expected)
+
+
+def test_eta_vertical_interpolate_uses_native_fullpos_ppleta() -> None:
+    ak = np.array([0.0, 20000.0, 60000.0, 0.0], dtype=np.float64)
+    bk = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float64)
+    attrs = {"GRIB_pv": np.concatenate([ak, bk])}
+    data = xr.DataArray(
+        np.ones((2, 3, 4), dtype=np.float64),
+        dims=("time", "hybrid", "values"),
+        coords={"time": [0, 1], "hybrid": [1, 2, 3], "values": [0, 1, 2, 3]},
+        attrs=attrs,
+        name="q",
+    )
+    sp = xr.DataArray(np.full((2, 4), 90000.0), dims=("time", "values"), coords={"time": [0, 1]})
+
+    out = vertical_interpolate(
+        data,
+        target="eta",
+        levels=[1, 3],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert out.dims == ("time", "eta", "values")
+    assert out.shape == (2, 2, 4)
+    assert out.attrs["vertical_backend"] == "FULLPOS"
+    assert out.attrs["vertical_target"] == "eta"
+    assert out.attrs["vertical_native_path"].startswith("PPLETA/GPHPRE")
+    np.testing.assert_array_equal(out["eta"].values, [1, 3])
+    np.testing.assert_allclose(out.values, 1.0)
+
+
+def test_eta_vertical_interpolate_dataset_uses_fullpos_wind_pair() -> None:
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    attrs = {"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 0.0, 0.0, 0.0, 0.0, 1.0])}
+    ds = xr.Dataset(
+        {
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.full((1, 3, 2), 2.0), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.full((1, 3, 2), 0.001), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 90000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    out = vertical_interpolate(
+        ds,
+        target="eta",
+        levels=[1, 2],
+        variables=["u", "v", "q"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert set(out.data_vars) == {"u", "v", "q"}
+    assert out["u"].dims == ("time", "eta", "values")
+    np.testing.assert_allclose(out["u"].values, 1.0)
+    np.testing.assert_allclose(out["v"].values, 2.0)
+    np.testing.assert_allclose(out["q"].values, 0.001)
 
 
 def test_native_theta_pressures_matches_gptet_formula_for_linear_profile() -> None:

@@ -135,6 +135,17 @@ extern void fullpos_theta_pressures_c(
     double *output,
     int *ierr);
 
+extern void fullpos_eta_pressures_c(
+    const int *ncol,
+    const int *nlev,
+    const int *nout,
+    const double *ak,
+    const double *bk,
+    const double *ps,
+    const double *eta_levels,
+    double *output,
+    int *ierr);
+
 extern void fullpos_temperature_pressures_c(
     const int *ncol,
     const int *nlev,
@@ -885,6 +896,79 @@ fail:
     return NULL;
 }
 
+static PyObject *eta_pressures(PyObject *self, PyObject *args)
+{
+    PyObject *ak_obj = NULL, *bk_obj = NULL, *ps_obj = NULL, *levels_obj = NULL;
+    PyArrayObject *ak = NULL, *bk = NULL, *ps = NULL, *levels = NULL, *out = NULL;
+    int ncol, nlev, nout, ierr = 0;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "OOOO", &ak_obj, &bk_obj, &ps_obj, &levels_obj)) {
+        return NULL;
+    }
+    ak = as_c_array(ak_obj, NPY_DOUBLE, 1, 1);
+    bk = as_c_array(bk_obj, NPY_DOUBLE, 1, 1);
+    ps = as_c_array(ps_obj, NPY_DOUBLE, 1, 1);
+    levels = as_c_array(levels_obj, NPY_DOUBLE, 1, 1);
+    if (!ak || !bk || !ps || !levels) {
+        goto fail;
+    }
+    if (PyArray_DIM(ak, 0) != PyArray_DIM(bk, 0)) {
+        PyErr_SetString(PyExc_ValueError, "ak and bk must have matching lengths");
+        goto fail;
+    }
+    if (PyArray_DIM(ak, 0) < 3) {
+        PyErr_SetString(PyExc_ValueError, "ak/bk must contain at least three half levels");
+        goto fail;
+    }
+    if (PyArray_DIM(ps, 0) <= 0) {
+        PyErr_SetString(PyExc_ValueError, "surface pressure must contain at least one column");
+        goto fail;
+    }
+    if (PyArray_DIM(levels, 0) <= 0) {
+        PyErr_SetString(PyExc_ValueError, "eta levels must contain at least one output level");
+        goto fail;
+    }
+    if (PyArray_DIM(ak, 0) - 1 > INT_MAX || PyArray_DIM(ps, 0) > INT_MAX || PyArray_DIM(levels, 0) > INT_MAX) {
+        PyErr_SetString(PyExc_OverflowError, "input dimensions exceed native int range");
+        goto fail;
+    }
+    nlev = (int)PyArray_DIM(ak, 0) - 1;
+    ncol = (int)PyArray_DIM(ps, 0);
+    nout = (int)PyArray_DIM(levels, 0);
+    dims[0] = ncol;
+    dims[1] = nout;
+    out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!out) {
+        goto fail;
+    }
+    fullpos_eta_pressures_c(&ncol, &nlev, &nout,
+                            (const double *)PyArray_DATA(ak),
+                            (const double *)PyArray_DATA(bk),
+                            (const double *)PyArray_DATA(ps),
+                            (const double *)PyArray_DATA(levels),
+                            (double *)PyArray_DATA(out),
+                            &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS PPLETA eta target-pressure computation failed with ierr=%d", ierr);
+        goto fail;
+    }
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(levels);
+    return (PyObject *)out;
+
+fail:
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(levels);
+    Py_XDECREF(out);
+    return NULL;
+}
+
 static PyObject *theta_pressures(PyObject *self, PyObject *args)
 {
     PyObject *temperature_obj = NULL, *ak_obj = NULL, *bk_obj = NULL, *ps_obj = NULL, *levels_obj = NULL;
@@ -1258,6 +1342,7 @@ static PyMethodDef methods[] = {
     {"hybrid_pressure_ppq", hybrid_pressure_ppq, METH_VARARGS, "Interpolate scalar fields to target hybrid levels with native FULLPOS PPQ."},
     {"hybrid_pressure_ppt", hybrid_pressure_ppt, METH_VARARGS, "Interpolate temperature to target hybrid levels with native FULLPOS PPT."},
     {"hybrid_pressure_ppuv", hybrid_pressure_ppuv, METH_VARARGS, "Interpolate wind components to target hybrid levels with native FULLPOS PPUV."},
+    {"eta_pressures", eta_pressures, METH_VARARGS, "Compute eta/model-level-index target pressures with native FULLPOS PPLETA/GPHPRE."},
     {"theta_pressures", theta_pressures, METH_VARARGS, "Compute potential-temperature target pressures with native FULLPOS GPTET/PPLTETA."},
     {"temperature_pressures", temperature_pressures, METH_VARARGS, "Compute temperature target pressures with native FULLPOS PPLTW/FPPS."},
     {"potential_vorticity_pressures", potential_vorticity_pressures, METH_VARARGS, "Compute potential-vorticity target pressures with native FULLPOS PPLTP."},
