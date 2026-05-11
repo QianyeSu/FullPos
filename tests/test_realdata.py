@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from fullpos._vertical.pressure import (
     _midlevel_coefficients_from_half_levels,
     prepare_pressure_request,
 )
+from fullpos._vertical.validation import pressure_metric_summary
 
 
 REAL_O320 = Path(
@@ -23,12 +25,27 @@ REAL_SURFACE_O96 = Path(
 REAL_SURFACE_O96_MATCHING = Path(
     r"L:\ERA5_Complete\Reanalysis\surface\ERA5_Reanalysis_surface_19781201_hourly_O96.grib"
 )
+REAL_OROGRAPHY_O96 = Path(
+    r"L:\ERA5_Complete\ERA5_Reanalysis_surface_geopotential_O96.grib"
+)
 REAL_MODEL_O96 = Path(
     r"L:\ERA5_Complete\Reanalysis\model_level\ERA5_Reanalysis_19781201_6hourly_ml1-137_O96.grib2"
 )
 REAL_MODEL_F96 = Path(
     r"L:\ERA5_test\era5_reanalysis_model_level_20250101_packing_CCSDS_F96.grib2"
 )
+
+
+def _optional_real_era5_pressure_paths() -> tuple[Path, Path]:
+    pytest.importorskip("cfgrib")
+    model = Path(os.environ.get("FULLPOS_ERA5_MODEL_FILE") or REAL_MODEL_O96)
+    surface = Path(os.environ.get("FULLPOS_ERA5_SURFACE_FILE") or REAL_SURFACE_O96_MATCHING)
+    if not model.exists() or not surface.exists():
+        pytest.skip(
+            "local ERA5 pressure smoke inputs not found; set FULLPOS_ERA5_MODEL_FILE "
+            "and FULLPOS_ERA5_SURFACE_FILE or place the expected O96 samples locally"
+        )
+    return model, surface
 
 
 @pytest.mark.skipif(not REAL_O320.exists(), reason="local ERA5 O320 GRIB sample not found")
@@ -201,8 +218,175 @@ def test_real_o96_pressure_interpolation_uses_native_fullpos_backend() -> None:
     assert out.dims == ("time", "pressure", "values")
     assert out.shape == (4, 3, 40320)
     assert out.attrs["vertical_backend"] == "FULLPOS"
+    assert out.attrs["vertical_target"] == "pressure"
+    assert out.attrs["pressure_units"] == "Pa"
     np.testing.assert_allclose(out["pressure"].values, [100000.0, 85000.0, 50000.0])
     assert np.isfinite(out.values).all()
+
+
+def test_real_era5_pressure_vertical_dataset_smoke_uses_apache_for_tuvq() -> None:
+    model_path, surface_path = _optional_real_era5_pressure_paths()
+
+    model = xr.open_dataset(
+        model_path,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"typeOfLevel": "hybrid"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints", "pv", "packingType"],
+        },
+    )[["t", "u", "v", "q"]].isel(time=slice(0, 1)).load()
+    surface = xr.open_dataset(
+        surface_path,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "sp", "typeOfLevel": "surface"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints"],
+        },
+    )["sp"].sel(time=model["time"]).load()
+
+    levels = [20000.0, 30000.0, 50000.0]
+    out = vertical_interpolate(
+        model,
+        target="pressure",
+        levels=levels,
+        variables=["t", "u", "v", "q"],
+        chunks={"time": 1, "values": 10000},
+        surface_pressure=surface,
+    )
+    chunked = vertical_interpolate(
+        model,
+        target="pressure",
+        levels=levels,
+        variables=["t", "u", "v", "q"],
+        chunks={"time": 1, "values": 2000},
+        surface_pressure=surface,
+    )
+
+    assert set(out.data_vars) == {"t", "u", "v", "q"}
+    np.testing.assert_allclose(out["pressure"].values, levels)
+    for name in ("t", "u", "v", "q"):
+        assert out[name].dims == ("time", "pressure", "values")
+        assert out[name].attrs["vertical_backend"] == "FULLPOS"
+        assert out[name].attrs["vertical_target"] == "pressure"
+        assert out[name].attrs["vertical_native_path"] == "APACHE"
+        assert out[name].attrs["pressure_units"] == "Pa"
+        finite_fraction = float(np.isfinite(out[name].values).mean())
+        assert finite_fraction > 0.99
+
+    for name in ("t", "u", "v", "q"):
+        metrics = pressure_metric_summary(chunked[name], out[name], level_dim="pressure")
+        assert metrics["overall"]["count"] == out[name].size
+        assert metrics["overall"]["rmse"] <= 1.0e-8
+        assert metrics["overall"]["max_abs"] <= 1.0e-8
+
+
+@pytest.mark.skipif(
+    not (REAL_MODEL_O96.exists() and REAL_SURFACE_O96_MATCHING.exists()),
+    reason="local ERA5 O96 model/surface GRIB samples not found",
+)
+def test_real_o96_pressure_dataset_uses_apache_lescale() -> None:
+    model = xr.open_dataset(
+        REAL_MODEL_O96,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"typeOfLevel": "hybrid"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints", "pv", "packingType"],
+        },
+    )[["t", "u", "v", "q"]].isel(time=slice(0, 1)).load()
+    surface = xr.open_dataset(
+        REAL_SURFACE_O96_MATCHING,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "sp", "typeOfLevel": "surface"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints"],
+        },
+    )["sp"].sel(time=model["time"]).load()
+    target_surface = surface * 0.95
+
+    out = vertical_interpolate(
+        model,
+        target="pressure",
+        levels=[30000.0, 50000.0, 85000.0],
+        variables=["t", "u", "v", "q"],
+        chunks={"time": 1, "values": 10000},
+        surface_pressure=surface,
+        target_surface_pressure=target_surface,
+        lescale=True,
+    )
+
+    assert set(out.data_vars) == {"t", "u", "v", "q"}
+    for name in ("t", "u", "v", "q"):
+        assert out[name].dims == ("time", "pressure", "values")
+        assert out[name].attrs["vertical_backend"] == "FULLPOS"
+        assert out[name].attrs["vertical_native_path"] == "APACHE"
+        assert out[name].attrs["vertical_lescale"] == "enabled"
+        assert np.isfinite(out[name].values).all()
+
+
+@pytest.mark.skipif(
+    not (REAL_MODEL_O96.exists() and REAL_SURFACE_O96_MATCHING.exists() and REAL_OROGRAPHY_O96.exists()),
+    reason="local ERA5 O96 model/surface/orography GRIB samples not found",
+)
+def test_real_o96_flight_level_matches_equivalent_height_above_sea() -> None:
+    model = xr.open_dataset(
+        REAL_MODEL_O96,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "t", "typeOfLevel": "hybrid"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints", "pv", "packingType"],
+        },
+    )["t"].isel(time=slice(0, 1)).load()
+    surface = xr.open_dataset(
+        REAL_SURFACE_O96_MATCHING,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "sp", "typeOfLevel": "surface"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints"],
+        },
+    )["sp"].sel(time=model["time"]).load()
+    orography = xr.open_dataset(
+        REAL_OROGRAPHY_O96,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "z", "typeOfLevel": "surface"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints"],
+        },
+    )["z"].load()
+    if "time" in orography.dims:
+        orography = orography.isel(time=0, drop=True)
+
+    flight = vertical_interpolate(
+        model,
+        target="flight_level",
+        levels=[100.0, 200.0, 300.0, 350.0],
+        chunks={"time": 1, "values": 10000},
+        surface_pressure=surface,
+        orography_geopotential=orography,
+    )
+    height = vertical_interpolate(
+        model,
+        target="height_above_sea",
+        levels=[3048.0, 6096.0, 9144.0, 10668.0],
+        chunks={"time": 1, "values": 10000},
+        surface_pressure=surface,
+        orography_geopotential=orography,
+    )
+
+    assert flight.dims == ("time", "flight_level", "values")
+    assert flight.shape == (1, 4, 40320)
+    assert flight.attrs["vertical_backend"] == "FULLPOS"
+    assert flight.attrs["vertical_target"] == "flight_level"
+    assert flight.attrs["flight_level_units"] == "hundreds of feet"
+    assert np.isfinite(flight.values).all()
+    np.testing.assert_allclose(flight["flight_level"].values, [100.0, 200.0, 300.0, 350.0])
+    np.testing.assert_allclose(flight.values, height.values)
 
 
 @pytest.mark.skipif(

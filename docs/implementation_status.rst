@@ -34,10 +34,15 @@ Completed
   model-level inputs through the OpenIFS/FULLPOS PP-chain:
   ``PPINIT``/``PPFLEV`` plus ``PPQ`` for scalar fields, paired ``PPUV`` for
   winds, and ``PPT``/``PPSTA`` for temperature.
+* Python-side POS-style vertical orchestration through a small internal plan
+  registry for the implemented targets.
 * Dataset-level vertical pressure interpolation with ``variables=[...]``,
   surface pressure alignment, GRIB ``pv`` hybrid coefficient extraction,
   ``lnsp`` normalization, metadata/history preservation, and xarray-style
   ``chunks={...}``.
+* Dataset-level ``t``/``u``/``v``/``q`` pressure interpolation through native
+  ``APACHE``, with explicit APACHE ``LESCALE`` opt-in via ``lescale=True`` and
+  ``target_surface_pressure=...``.
 * Native PP-chain column-pressure backend for per-column target pressures.
 * Native hybrid-target wrappers for ``target="model_level"``. Target hybrid
   half-level coefficients are converted to per-column full-level pressures in
@@ -48,6 +53,18 @@ Completed
 * Native temperature target pressures through vendored FULLPOS ``PPLTW`` and
   ``FPPS``, followed by the same native ``PPQ``/``PPUV``/``PPT`` interpolation
   kernels.
+* Native height-above-orography target pressure lookup through FULLPOS
+  ``GPHPRE``/``GPGEO``/``FPPS``. The wrapper accepts heights in metres above
+  ECMWF surface geopotential, uses native ``GPRCP`` for moist ``R`` when
+  ``q`` is available, and then reuses the same native
+  ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
+* Native height-above-sea target pressure lookup through the same FULLPOS
+  ``GPHPRE``/``GPGEO``/``FPPS`` path with target geopotential
+  ``g * height_m``.
+* Native flight-level target pressure lookup through the same absolute-height
+  FULLPOS ``GPHPRE``/``GPGEO``/``FPPS`` path. Public levels are standard
+  ``FL`` numbers in hundreds of feet, converted internally to metres above
+  mean sea level before calling the native pressure lookup.
 * Native iso-PV target pressure lookup through FULLPOS ``PPLTP`` on either a
   provided PV field or an automatically diagnosed native ``GPPVO`` PV field,
   followed by the same native ``PPQ``/``PPUV``/``PPT`` interpolation kernels.
@@ -61,15 +78,19 @@ Completed
   given ``u``/``v``/``t``/``q`` plus grid metadata.
 * Native dependency diagnostics through ``backend_info`` and ``doctor``.
 
-Partially Complete
-------------------
+Partial
+-------
 
 * Mask-aware SST/surface-field handling is not a completed native FULLPOS
   user-level workflow.
-* Pressure-level vertical interpolation is a native PP-chain wrapper, not yet
-  the complete ``APACHE``/``LESCALE`` path. The complete path still needs
-  OpenIFS geometry, moist thermodynamic, geopotential, and ESCALE dependencies
-  such as ``FPVIEW``, ``GPHPRE``, ``GPRCP``, ``GPRH``, and ``PPGEOP``.
+* Pressure-level Dataset interpolation for ``t``/``u``/``v``/``q`` is wired
+  into the native ``APACHE`` core, including explicit APACHE ``LESCALE`` opt-in
+  for pressure requests. The Python side now routes targets through a small
+  internal POS-style registry/plan layer, but it is still not the full
+  ``pos.F90`` workflow. Some preparation routines are still wrapped directly
+  for specific targets, including ``GPHPRE``/``GPGEO`` and ``GPRCP`` for
+  ``height_above_orography``. The remaining path still needs additional
+  OpenIFS geometry and surface-processing state to expose full ``POS``.
 * ``target="model_level"`` currently means native PP-chain interpolation to
   target hybrid full-level pressures computed in the Fortran wrapper. It is not
   the complete FULLPOS ``POS`` ``CDCONF='M'`` model-level copy branch, so
@@ -89,19 +110,23 @@ Partially Complete
 * ``target="eta"`` currently follows the native ``PPLETA`` convention where
   requested levels are integer eta/model-level indexes. It is not a continuous
   0..1 sigma-coordinate interpolation API.
+* ``target="height_above_orography"``, ``target="height_above_sea"``, and
+  ``target="flight_level"`` currently implement the native FULLPOS
+  ``GPHPRE``/``GPGEO``/``FPPS`` pressure lookups plus the native PP-chain
+  interpolation kernels. They are not yet the complete ``APACHE`` output-field
+  workflow for all derived fields.
 * Development-only Skyborn compiled reference checks remain available for
   comparison, including correct ``p0=1`` handling for ERA5 ``ap``
   coefficients.
 * Filter profiles are applied in Python to native ECTRANS coefficients. This is
   not yet a complete wrapper of every ``fpfilter.F90`` branch.
 
-Not Complete
+Not complete
 ------------
 
 * FULLPOS land/sea-mask weighted SST interpolation.
-* Complete ``POS/APACHE``/``LESCALE`` vertical workflow, including the
-  ``CDCONF='M'`` model-level branch.
-* Vertical interpolation to height and flight-level related levels.
+* Complete ``POS`` vertical workflow, including the ``CDCONF='M'`` model-level
+  branch and the remaining geometry and surface processing hooks.
 * Surface-field special FULLPOS processing.
 * Stretched-geometry filtering.
 * Post-processing level-specific filtering.
@@ -125,11 +150,17 @@ interpolation. Real decoded examples:
 * O96 ``reduced_gg``: packed octahedral reduced Gaussian field, usable through
   ``source_grid="O96"`` or ``GRIB_pl``.
 
-Next Practical Milestone
-------------------------
+Next milestones
+---------------
 
-The next major feature should either:
+The current development milestone is intentionally narrow:
 
-* add FULLPOS land/sea-mask weighted surface interpolation, or
-* extend vertical interpolation from the current PP-chain wrapper toward the
-  complete vendored OpenIFS/FULLPOS ``POS/APACHE`` chain.
+* keep the native spectral regridding API stable,
+* keep the native spectral filtering API stable, and
+* stabilize the native pressure-level vertical path, especially the
+  Dataset-level ``APACHE`` route for ``t``/``u``/``v``/``q``.
+
+The internal POS-style registry is only an extension point for later work.
+Surface special processing, full ``POS`` orchestration, height/flight derived
+post-processing, and additional vertical targets should stay out of the active
+milestone unless they are explicitly selected as the next feature.

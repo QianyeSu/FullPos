@@ -15,16 +15,45 @@ end module yomhook
 module yomcst
   use parkind1, only: jprb
   implicit none
-  real(kind=jprb) :: ratm = 100000.0_jprb
-  real(kind=jprb) :: rg = 9.80665_jprb
-  real(kind=jprb) :: rd = 287.0596736665907_jprb
-  real(kind=jprb) :: rv = 461.5249933083879_jprb
-  real(kind=jprb) :: rcpd = 3.5_jprb * 287.0596736665907_jprb
-  real(kind=jprb) :: rcvd = 2.5_jprb * 287.0596736665907_jprb
-  real(kind=jprb) :: rcpv = 4.0_jprb * 461.5249933083879_jprb
-  real(kind=jprb) :: rcw = 4218.0_jprb
-  real(kind=jprb) :: rcs = 2106.0_jprb
+  real(kind=jprb), parameter :: ratm = 100000.0_jprb
+  real(kind=jprb), parameter :: rg = 9.80665_jprb
+  real(kind=jprb), parameter :: rd = 287.0596736665907_jprb
+  real(kind=jprb), parameter :: rv = 461.5249933083879_jprb
+  real(kind=jprb), parameter :: rcpd = 3.5_jprb * 287.0596736665907_jprb
+  real(kind=jprb), parameter :: rcvd = 2.5_jprb * 287.0596736665907_jprb
+  real(kind=jprb), parameter :: rcpv = 4.0_jprb * 461.5249933083879_jprb
+  real(kind=jprb), parameter :: rcw = 4218.0_jprb
+  real(kind=jprb), parameter :: rcs = 2106.0_jprb
+  real(kind=jprb), parameter :: retv = rv / rd - 1.0_jprb
+  real(kind=jprb), parameter :: rtt = 273.16_jprb
+  real(kind=jprb), parameter :: rlvtt = 2.5008e6_jprb
+  real(kind=jprb), parameter :: rlstt = 2.8345e6_jprb
+  real(kind=jprb), parameter :: rgamw = (rcw - rcpv) / rv
+  real(kind=jprb), parameter :: rbetw = rlvtt / rv + rgamw * rtt
+  real(kind=jprb), parameter :: ralpw = log(611.14_jprb) + rbetw / rtt + rgamw * log(rtt)
+  real(kind=jprb), parameter :: rgams = (rcs - rcpv) / rv
+  real(kind=jprb), parameter :: rbets = rlstt / rv + rgams * rtt
+  real(kind=jprb), parameter :: ralps = log(611.14_jprb) + rbets / rtt + rgams * log(rtt)
+  real(kind=jprb), parameter :: ralpd = ralps - ralpw
+  real(kind=jprb), parameter :: rbetd = rbets - rbetw
+  real(kind=jprb), parameter :: rgamd = rgams - rgamw
 end module yomcst
+
+module yomlun
+  implicit none
+  integer :: nulout = 6
+  integer :: nulerr = 0
+  integer :: nulnam = 0
+end module yomlun
+
+module yomphy
+  use parkind1, only: jpim
+  implicit none
+  type tphy
+    logical :: lneige = .false.
+  end type tphy
+  type(tphy) :: yrphy
+end module yomphy
 
 module yom_ygfl
   use parkind1, only: jpim, jprb
@@ -141,7 +170,22 @@ end module yomsta
 module yomct0
   implicit none
   logical :: loldpp = .false.
+  logical :: lecmwf = .true.
 end module yomct0
+
+module type_gflflds
+  use parkind1, only: jpim
+  implicit none
+  type type_igflfld
+    integer(kind=jpim) :: iq = 1
+    integer(kind=jpim) :: il = 2
+    integer(kind=jpim) :: ii = 3
+    integer(kind=jpim) :: irr = 4
+    integer(kind=jpim) :: is = 5
+    integer(kind=jpim) :: ig = 6
+    integer(kind=jpim) :: ih = 7
+  end type type_igflfld
+end module type_gflflds
 
 module yomcver
   use parkind1, only: jpim, jprb
@@ -227,6 +271,7 @@ end module yomppvi
 
 module yomvert
   use parkind1, only: jprb
+  use yomcver, only: tcver
   implicit none
   real(kind=jprb) :: vp00 = 100000.0_jprb
   real(kind=jprb) :: toppres = 0.1_jprb
@@ -240,10 +285,143 @@ module yomvert
     real(kind=jprb), allocatable :: vdela(:)
     real(kind=jprb), allocatable :: vdelb(:)
   end type tvab
+  type tveta
+    real(kind=jprb), allocatable :: vfe_rdetah(:)
+  end type tveta
+  type tvfe
+    integer :: unused = 0
+  end type tvfe
+  type tvertical_geom
+    logical :: lnonhyd_geom = .false.
+    type(tvab) :: yrvab
+    type(tveta) :: yrveta
+    type(tvfe) :: yrvfe
+    type(tcver) :: yrcver
+  end type tvertical_geom
 end module yomvert
+
+subroutine verdisint(ydvfe, ydcver, cdmethod, cdbc, kproma, kstart, kprof, kflev, pin, pout, kbc, kchunk)
+  use parkind1, only: jpim, jprb
+  use yomcver, only: tcver
+  use yomvert, only: tvfe
+  implicit none
+  type(tvfe), intent(in) :: ydvfe
+  type(tcver), intent(in) :: ydcver
+  character(len=*), intent(in) :: cdmethod, cdbc
+  integer(kind=jpim), intent(in) :: kproma, kstart, kprof, kflev
+  real(kind=jprb), intent(in) :: pin(kproma,0:kflev+1)
+  real(kind=jprb), intent(out) :: pout(kproma,0:kflev)
+  integer(kind=jpim), optional, intent(in) :: kbc, kchunk
+  pout(kstart:kprof,0:kflev) = pin(kstart:kprof,0:kflev)
+end subroutine verdisint
 
 subroutine abor1(cdtext)
   implicit none
   character(len=*), intent(in) :: cdtext
   error stop cdtext
 end subroutine abor1
+
+subroutine gprh(ldwmorh, kproma, kstart, kprof, kflev, prhmax, prhmin, pq, pt, presf, pes, prh, ldsonntag)
+  use parkind1, only: jpim, jprb
+  use yomcst, only: retv, rtt
+  use yomphy, only: yrphy
+  use yomct0, only: lecmwf
+  implicit none
+
+  logical, intent(in) :: ldwmorh
+  integer(kind=jpim), intent(in) :: kproma, kstart, kprof, kflev
+  real(kind=jprb), intent(in) :: prhmax, prhmin
+  real(kind=jprb), intent(in) :: pq(kproma,kflev), pt(kproma,kflev), presf(kproma,kflev)
+  real(kind=jprb), intent(inout) :: pes(kproma,kflev)
+  real(kind=jprb), intent(out) :: prh(kproma,kflev)
+  logical, optional, intent(in) :: ldsonntag
+
+  integer(kind=jpim) :: jl, jlev
+  real(kind=jprb) :: zdelta, zes
+
+  include "fcttre.func.h"
+  include "fcttrm.func.h"
+
+  do jlev = 1, kflev
+    do jl = kstart, kprof
+      if (lecmwf) then
+        if (ldwmorh) then
+          pes(jl,jlev) = foewmo(pt(jl,jlev))
+        else
+          pes(jl,jlev) = foewm(pt(jl,jlev))
+        endif
+      else
+        if (yrphy%lneige) then
+          zdelta = max(0.0_jprb, sign(1.0_jprb, rtt - pt(jl,jlev)))
+        else
+          zdelta = 0.0_jprb
+        endif
+        pes(jl,jlev) = foew(pt(jl,jlev), zdelta)
+      endif
+      zes = pes(jl,jlev)
+      prh(jl,jlev) = max(prhmin, min((presf(jl,jlev) * pq(jl,jlev) * (retv + 1.0_jprb)) / &
+        & ((1.0_jprb + retv * pq(jl,jlev)) * zes), prhmax))
+    enddo
+  enddo
+end subroutine gprh
+
+real(kind=jprb) function foew(pt, zdelta)
+  use parkind1, only: jprb
+  use yomcst, only: ralpw, ralpd, ralps, rbetw, rbetd, rbets, rgamw, rgamd, rgams, rtt
+  implicit none
+  real(kind=jprb), intent(in) :: pt, zdelta
+  real(kind=jprb) :: ztmp
+
+  ztmp = max(pt, 1.0_jprb)
+  if (zdelta > 0.5_jprb) then
+    foew = exp(ralps + rbets / ztmp + rgams * log(ztmp))
+  else
+    foew = exp(ralpw + rbetw / ztmp + rgamw * log(ztmp))
+  endif
+end function foew
+
+real(kind=jprb) function foewm(pt)
+  use parkind1, only: jprb
+  use yomcst, only: ralpw, rbetw, rgamw
+  implicit none
+  real(kind=jprb), intent(in) :: pt
+  foewm = exp(ralpw + rbetw / max(pt, 1.0_jprb) + rgamw * log(max(pt, 1.0_jprb)))
+end function foewm
+
+real(kind=jprb) function foewmo(pt)
+  use parkind1, only: jprb
+  use yomcst, only: ralpw, rbetw, rgamw
+  implicit none
+  real(kind=jprb), intent(in) :: pt
+  foewmo = exp(ralpw + rbetw / max(pt, 1.0_jprb) + rgamw * log(max(pt, 1.0_jprb)))
+end function foewmo
+
+real(kind=jprb) function foelson(pt)
+  use parkind1, only: jprb
+  use yomcst, only: ralps, rbets, rgams
+  implicit none
+  real(kind=jprb), intent(in) :: pt
+  foelson = exp(ralps + rbets / max(pt, 1.0_jprb) + rgams * log(max(pt, 1.0_jprb)))
+end function foelson
+
+real(kind=jprb) function foqs(es)
+  use parkind1, only: jprb
+  use yomcst, only: retv
+  implicit none
+  real(kind=jprb), intent(in) :: es
+  foqs = es / max(1.0_jprb, 1.0_jprb + retv)
+end function foqs
+
+real(kind=jprb) function fodqs(qs, es, desdt)
+  use parkind1, only: jprb
+  implicit none
+  real(kind=jprb), intent(in) :: qs, es, desdt
+  fodqs = 0.0_jprb
+end function fodqs
+
+real(kind=jprb) function fodlew(pt, zdelta)
+  use parkind1, only: jprb
+  implicit none
+  real(kind=jprb), intent(in) :: pt, zdelta
+  fodlew = 0.0_jprb
+end function fodlew

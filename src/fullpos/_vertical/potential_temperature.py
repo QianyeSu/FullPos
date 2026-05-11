@@ -54,6 +54,7 @@ def interpolate_to_potential_temperature(
     OpenIFS/FULLPOS ``GPTET`` and ``PPLTETA``. The resulting per-column
     pressures are then used by the native ``PPQ``/``PPUV``/``PPT`` PP-chain
     kernels. Python only coordinates xarray metadata, chunking, and dispatch.
+    That means the actual interpolation boundary is the native FULLPOS call.
     """
     request = prepare_potential_temperature_request(
         values,
@@ -115,7 +116,7 @@ def prepare_potential_temperature_request(
     hybrid_coefficients=None,
     temperature=None,
 ) -> PotentialTemperatureRequest:
-    """Validate and normalize a potential-temperature interpolation request."""
+    """Normalize a potential-temperature request before native FULLPOS."""
     normalized_levels = _normalize_theta_levels(levels)
     reference, selected = _validate_theta_request(values, variables=variables, chunks=chunks)
     hybrid_dim = _find_hybrid_dim(reference)
@@ -153,6 +154,7 @@ def _validate_theta_request(
     variables,
     chunks: dict[str, int] | None,
 ) -> tuple[xr.DataArray, tuple[str, ...] | None]:
+    """Validate xarray inputs before theta-surface lookup."""
     if isinstance(values, xr.Dataset):
         selected = list(values.data_vars) if variables is None else [str(v) for v in variables]
         missing = [name for name in selected if name not in values.data_vars]
@@ -174,6 +176,7 @@ def _resolve_temperature(
     temperature,
     chunks: dict[str, int] | None,
 ) -> xr.DataArray:
+    """Resolve the temperature field required by native theta surfaces."""
     if temperature is None:
         if isinstance(values, xr.Dataset) and "t" in values:
             temperature = values["t"]
@@ -194,6 +197,7 @@ def _resolve_temperature(
 
 
 def _normalize_theta_levels(levels) -> np.ndarray:
+    """Normalize positive theta targets before native dispatch."""
     arr = np.asarray(levels, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         raise ValueError("potential-temperature interpolation requires at least one target theta level")
@@ -212,6 +216,7 @@ def _interpolate_data_array(
     variable_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Dispatch a scalar field to the native theta pressure kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -233,6 +238,7 @@ def _interpolate_wind_pair(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> tuple[xr.DataArray, xr.DataArray]:
+    """Dispatch a wind pair to the native theta PPUV kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -275,6 +281,7 @@ def _apply_native_scalar_kernel(
     keep_attrs: bool,
     kernel,
 ) -> xr.DataArray:
+    """Apply a native scalar theta kernel block-by-block."""
     hybrid_dim = request.hybrid_dim
     out_dims = tuple("potential_temperature" if dim == hybrid_dim else dim for dim in obj.dims)
     out_shape = tuple(request.levels.size if dim == hybrid_dim else obj.sizes[dim] for dim in obj.dims)
@@ -302,6 +309,7 @@ def _theta_target_pressures(
     request: PotentialTemperatureRequest,
     ps_block: xr.DataArray,
 ) -> np.ndarray:
+    """Compute native target pressures for theta surfaces."""
     from fullpos import _vertical_native
 
     return _vertical_native.theta_pressures(
@@ -319,6 +327,7 @@ def _temperature_target_pressures(
     request: PotentialTemperatureRequest,
     ps_block: xr.DataArray,
 ) -> np.ndarray:
+    """Compute native target pressures for temperature surfaces."""
     from fullpos import _vertical_native
 
     return _vertical_native.temperature_pressures(
@@ -338,6 +347,7 @@ def _wrap_theta_output(
     *,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native theta interpolation."""
     coords = {}
     for old_dim, new_dim in zip(template.dims, dims):
         if new_dim == "potential_temperature":

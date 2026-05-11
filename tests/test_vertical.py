@@ -6,11 +6,18 @@ import xarray as xr
 
 from fullpos import diagnose_potential_vorticity, vertical_capabilities, vertical_interpolate
 from fullpos.grids import gaussian_latitudes, regular_longitudes
+from fullpos._vertical.common import SUPPORTED_VERTICAL_TARGETS
+from fullpos._vertical.pos import (
+    dispatch_vertical_interpolate,
+    get_vertical_target_plan,
+    iter_vertical_target_plans,
+)
 from fullpos._vertical.pressure import (
     _infer_reference_pressure_from_ak,
     _midlevel_coefficients_from_half_levels,
     _select_hybrid_coefficients_for_levels,
     prepare_pressure_request,
+    pressure_capabilities,
 )
 from fullpos._vertical.validation import metric_block, pressure_metric_summary
 
@@ -24,6 +31,62 @@ def test_vertical_capabilities_reports_native_pressure_target() -> None:
     assert capabilities["pressure"] == "native"
     assert capabilities["temperature"] == "native_pp_chain"
     assert capabilities["eta"] == "native_ppleta"
+    assert capabilities["height_above_orography"] == "native_gpgeo_fpps"
+    assert capabilities["height_above_sea"] == "native_gpgeo_fpps"
+    assert capabilities["flight_level"] == "native_gpgeo_fpps"
+
+
+def test_vertical_plan_registry_matches_supported_targets() -> None:
+    plans = list(iter_vertical_target_plans())
+
+    assert [plan.target for plan in plans] == list(SUPPORTED_VERTICAL_TARGETS)
+    assert {plan.target for plan in plans} == set(SUPPORTED_VERTICAL_TARGETS)
+    assert get_vertical_target_plan("pressure").backend == "APACHE"
+    assert get_vertical_target_plan("pressure").capability == "native"
+    assert get_vertical_target_plan("height_above_sea").derived_handler is None
+    assert get_vertical_target_plan("pressure").surface_handler is None
+
+
+def test_vertical_dispatch_uses_registered_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = get_vertical_target_plan("pressure")
+    seen: dict[str, tuple[tuple[object, ...], dict[str, object]]] = {}
+
+    def fake_handler(*args: object, **kwargs: object) -> str:
+        seen["call"] = (args, kwargs)
+        return "sentinel"
+
+    monkeypatch.setattr(
+        "fullpos._vertical.pos._VERTICAL_TARGET_PLAN_REGISTRY",
+        dict(
+            [
+                (
+                    "pressure",
+                    type(plan)(
+                        target=plan.target,
+                        backend=plan.backend,
+                        capability=plan.capability,
+                        handler=fake_handler,
+                        surface_handler=plan.surface_handler,
+                        derived_handler=plan.derived_handler,
+                    ),
+                )
+            ]
+        ),
+    )
+
+    out = dispatch_vertical_interpolate("values", target="pressure", levels=[1000.0])
+
+    assert out == "sentinel"
+    assert seen["call"] == (("values",), {"levels": [1000.0]})
+
+
+def test_pressure_capabilities_reports_apache_lescale_status() -> None:
+    capabilities = pressure_capabilities()
+
+    assert capabilities["status"] == "native"
+    assert capabilities["native_backend"] == "FULLPOS"
+    assert capabilities["apache_core"] == "Dataset t/u/v/q"
+    assert "target_surface_pressure" in capabilities["lescale"]
 
 
 def test_pressure_vertical_interpolate_rejects_missing_levels() -> None:
@@ -123,6 +186,35 @@ def test_prepare_pressure_request_accepts_external_hybrid_coefficients_and_lnsp(
     np.testing.assert_allclose(request.surface_pressure.values, 90000.0)
     np.testing.assert_allclose(request.ak, [0.0, 1.0, 2.0, 3.0])
     np.testing.assert_allclose(request.bk, [0.0, 0.3, 0.6, 1.0])
+
+
+def test_pressure_vertical_interpolate_accepts_lnsp_end_to_end() -> None:
+    data = xr.DataArray(
+        np.array([[[250.0, 251.0], [260.0, 261.0], [270.0, 271.0]]], dtype=np.float64),
+        dims=("time", "hybrid", "values"),
+        coords={"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]},
+        attrs={"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 100000.0, 0.0, 0.0, 0.0, 0.0])},
+        name="t",
+    )
+    lnsp = xr.DataArray(
+        np.log(np.full((1, 2), 90000.0)),
+        dims=("time", "values"),
+        coords={"time": [0], "values": [0, 1]},
+        name="lnsp",
+        attrs={"GRIB_shortName": "lnsp"},
+    )
+
+    out = vertical_interpolate(
+        data,
+        target="pressure",
+        levels=[30000.0, 80000.0],
+        surface_pressure=lnsp,
+    )
+
+    assert out.dims == ("time", "pressure", "values")
+    assert out.attrs["vertical_backend"] == "FULLPOS"
+    assert out.attrs["pressure_units"] == "Pa"
+    assert np.isfinite(out.values).all()
 
 
 def test_midlevel_coefficients_collapse_adjacent_half_levels() -> None:
@@ -279,6 +371,128 @@ def test_pressure_vertical_interpolate_dataset_uses_fullpos_wind_pair() -> None:
     np.testing.assert_allclose(out["q"].values, 0.001)
 
 
+def test_pressure_vertical_interpolate_dataset_uses_fullpos_apache_for_tuvq() -> None:
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    attrs = {"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 100000.0, 0.0, 0.0, 0.0, 0.0])}
+    ds = xr.Dataset(
+        {
+            "t": xr.DataArray(
+                np.array([[[250.0, 251.0], [260.0, 261.0], [270.0, 271.0]]], dtype=np.float64),
+                dims=("time", "hybrid", "values"),
+                coords=coords,
+                attrs=attrs,
+            ),
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.full((1, 3, 2), 2.0), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.zeros((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 90000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    out = vertical_interpolate(
+        ds,
+        target="pressure",
+        levels=[30000.0, 80000.0],
+        variables=["t", "u", "v", "q"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert set(out.data_vars) == {"t", "u", "v", "q"}
+    assert out["t"].dims == ("time", "pressure", "values")
+    for name in ("t", "u", "v", "q"):
+        assert out[name].attrs["vertical_backend"] == "FULLPOS"
+        assert out[name].attrs["vertical_native_path"] == "APACHE"
+    np.testing.assert_allclose(out["pressure"].values, [30000.0, 80000.0])
+    assert np.isfinite(out["t"].values).all()
+    np.testing.assert_allclose(out["u"].values, 1.0)
+    np.testing.assert_allclose(out["v"].values, 2.0)
+    np.testing.assert_allclose(out["q"].values, 0.0)
+
+
+def test_pressure_vertical_interpolate_dataset_exposes_apache_lescale() -> None:
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    attrs = {"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 100000.0, 0.0, 0.0, 0.0, 0.0])}
+    ds = xr.Dataset(
+        {
+            "t": xr.DataArray(
+                np.array([[[250.0, 251.0], [260.0, 261.0], [270.0, 271.0]]], dtype=np.float64),
+                dims=("time", "hybrid", "values"),
+                coords=coords,
+                attrs=attrs,
+            ),
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.full((1, 3, 2), 2.0), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.full((1, 3, 2), 0.001), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 90000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+    target_sp = xr.DataArray(np.full((1, 2), 82000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    out = vertical_interpolate(
+        ds,
+        target="pressure",
+        levels=[30000.0, 85000.0],
+        variables=["t", "u", "v", "q"],
+        surface_pressure=sp,
+        target_surface_pressure=target_sp,
+        lescale=True,
+    )
+
+    assert set(out.data_vars) == {"t", "u", "v", "q"}
+    assert out["t"].attrs["vertical_native_path"] == "APACHE"
+    assert out["t"].attrs["vertical_lescale"] == "enabled"
+    assert np.isfinite(out["t"].values).all()
+
+
+def test_pressure_vertical_interpolate_lescale_requires_tuvq_dataset() -> None:
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    attrs = {"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 100000.0, 0.0, 0.0, 0.0, 0.0])}
+    ds = xr.Dataset(
+        {
+            "t": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 90000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    with pytest.raises(ValueError, match="lescale=True requires Dataset input containing t, u, v, and q"):
+        vertical_interpolate(
+            ds,
+            target="pressure",
+            levels=[30000.0],
+            variables=["t", "u", "v"],
+            surface_pressure=sp,
+            lescale=True,
+        )
+
+
+def test_pressure_vertical_interpolate_validates_target_surface_pressure_type() -> None:
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    attrs = {"GRIB_pv": np.array([0.0, 20000.0, 60000.0, 100000.0, 0.0, 0.0, 0.0, 0.0])}
+    ds = xr.Dataset(
+        {
+            "t": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.ones((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.zeros((1, 3, 2)), dims=("time", "hybrid", "values"), coords=coords, attrs=attrs),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 90000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    with pytest.raises(TypeError, match="target_surface_pressure must be an xarray.DataArray"):
+        vertical_interpolate(
+            ds,
+            target="pressure",
+            levels=[30000.0],
+            variables=["t", "u", "v", "q"],
+            surface_pressure=sp,
+            target_surface_pressure=np.full((1, 2), 85000.0),
+            lescale=True,
+        )
+
+
 def test_native_column_pressure_matches_constant_pressure_levels() -> None:
     from fullpos import _vertical_native
 
@@ -314,6 +528,74 @@ def test_native_hybrid_pressure_matches_column_pressure_targets() -> None:
     by_hybrid = _vertical_native.hybrid_pressure_ppq(values, ak, bk, ps, target_ak, target_bk)
 
     np.testing.assert_allclose(by_hybrid, by_column)
+
+
+def test_native_apache_column_pressure_returns_dry_tuvq() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([0.0, 20000.0, 60000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    ps = np.array([90000.0, 95000.0], dtype=np.float64)
+    levels = np.array([30000.0, 80000.0], dtype=np.float64)
+    targets = np.asfortranarray(np.tile(levels, (2, 1)))
+    t = np.asfortranarray(np.array([[250.0, 260.0, 270.0], [251.0, 261.0, 271.0]], dtype=np.float64))
+    u = np.asfortranarray(np.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]], dtype=np.float64))
+    v = np.asfortranarray(np.array([[4.0, 5.0, 6.0], [40.0, 50.0, 60.0]], dtype=np.float64))
+    q = np.zeros((2, 3), dtype=np.float64, order="F")
+
+    apache_t, apache_u, apache_v, apache_q = _vertical_native.apache_column_pressure_tuvq(
+        t, u, v, q, ak, bk, ps, targets
+    )
+
+    np.testing.assert_allclose(apache_t, _vertical_native.column_pressure_ppt(t, ak, bk, ps, targets))
+    np.testing.assert_allclose(apache_q, 0.0)
+    for arr in (apache_t, apache_u, apache_v, apache_q):
+        assert arr.shape == (2, 2)
+        assert np.isfinite(arr).all()
+
+
+def test_native_apache_column_pressure_accepts_lescale_option() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([0.0, 20000.0, 60000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    ps = np.array([90000.0, 95000.0], dtype=np.float64)
+    targets = np.asfortranarray(np.tile([30000.0, 85000.0], (2, 1)))
+    t = np.asfortranarray(np.array([[250.0, 260.0, 270.0], [251.0, 261.0, 271.0]], dtype=np.float64))
+    u = np.asfortranarray(np.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]], dtype=np.float64))
+    v = np.asfortranarray(np.array([[4.0, 5.0, 6.0], [40.0, 50.0, 60.0]], dtype=np.float64))
+    q = np.asfortranarray(np.array([[0.001, 0.002, 0.003], [0.004, 0.005, 0.006]], dtype=np.float64))
+
+    out = _vertical_native.apache_column_pressure_tuvq(t, u, v, q, ak, bk, ps, targets, True)
+
+    assert len(out) == 4
+    for arr in out:
+        assert arr.shape == (2, 2)
+        assert np.isfinite(arr).all()
+
+
+def test_native_apache_lescale_uses_target_surface_pressure() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([0.0, 20000.0, 60000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    ps = np.array([90000.0, 95000.0], dtype=np.float64)
+    target_ps = np.array([82000.0, 87000.0], dtype=np.float64)
+    targets = np.asfortranarray(np.tile([30000.0, 85000.0], (2, 1)))
+    t = np.asfortranarray(np.array([[250.0, 260.0, 270.0], [251.0, 261.0, 271.0]], dtype=np.float64))
+    u = np.asfortranarray(np.array([[1.0, 2.0, 3.0], [10.0, 20.0, 30.0]], dtype=np.float64))
+    v = np.asfortranarray(np.array([[4.0, 5.0, 6.0], [40.0, 50.0, 60.0]], dtype=np.float64))
+    q = np.asfortranarray(np.array([[0.001, 0.002, 0.003], [0.004, 0.005, 0.006]], dtype=np.float64))
+
+    baseline = _vertical_native.apache_column_pressure_tuvq(t, u, v, q, ak, bk, ps, targets, None, False)
+    lescale = _vertical_native.apache_column_pressure_tuvq(t, u, v, q, ak, bk, ps, targets, target_ps, True)
+
+    max_diffs = []
+    for base, scaled in zip(baseline, lescale):
+        assert scaled.shape == (2, 2)
+        assert np.isfinite(scaled).all()
+        max_diffs.append(float(np.max(np.abs(scaled - base))))
+    assert max(max_diffs) > 0.0
 
 
 def test_native_eta_pressures_match_fullpos_model_level_indexes() -> None:
@@ -546,6 +828,207 @@ def test_temperature_vertical_interpolate_dataset_uses_temperature_variable_and_
     np.testing.assert_allclose(out["u"].values, 1.0)
     np.testing.assert_allclose(out["v"].values, 2.0)
     np.testing.assert_allclose(out["q"].values, 0.001)
+
+
+def test_native_height_above_orography_pressures_returns_finite_targets() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([10000.0, 30000.0, 70000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    ps = np.array([100000.0, 95000.0], dtype=np.float64)
+    orog = np.array([0.0, 1500.0], dtype=np.float64)
+    temperature = np.asfortranarray(
+        np.array(
+            [
+                [250.0, 265.0, 280.0],
+                [252.0, 267.0, 282.0],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    out = _vertical_native.height_above_orography_pressures(
+        temperature,
+        None,
+        ak,
+        bk,
+        ps,
+        orog,
+        np.array([0.0, 500.0, 1000.0], dtype=np.float64),
+    )
+
+    assert out.shape == (2, 3)
+    assert np.isfinite(out).all()
+    np.testing.assert_allclose(out[:, 0], ps)
+    assert np.all(out[:, 1] < out[:, 0])
+    assert np.all(out[:, 2] < out[:, 1])
+
+
+def test_height_above_orography_vertical_interpolate_dataset_uses_fullpos_gpgeo_fpps() -> None:
+    ak = np.array([10000.0, 30000.0, 70000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    attrs = {"GRIB_pv": np.concatenate([ak, bk])}
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    temperature = xr.DataArray(
+        np.array([[[250.0, 252.0], [265.0, 267.0], [280.0, 282.0]]], dtype=np.float64),
+        dims=("time", "hybrid", "values"),
+        coords=coords,
+        attrs=attrs,
+        name="t",
+    )
+    ds = xr.Dataset(
+        {
+            "t": temperature,
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=temperature.dims, coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.full((1, 3, 2), 2.0), dims=temperature.dims, coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.full((1, 3, 2), 0.001), dims=temperature.dims, coords=coords, attrs=attrs),
+            "z": xr.DataArray(np.array([0.0, 1500.0], dtype=np.float64), dims=("values",), coords={"values": [0, 1]}),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 100000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    out = vertical_interpolate(
+        ds,
+        target="height_above_orography",
+        levels=[0.0, 500.0],
+        variables=["u", "v", "q"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert set(out.data_vars) == {"u", "v", "q"}
+    assert out["u"].dims == ("time", "height_above_orography", "values")
+    assert out["u"].attrs["vertical_backend"] == "FULLPOS"
+    assert out["u"].attrs["vertical_target"] == "height_above_orography"
+    assert out["u"].attrs["vertical_native_path"].startswith("GPHPRE/GPGEO/FPPS")
+    np.testing.assert_allclose(out["height_above_orography"].values, [0.0, 500.0])
+    np.testing.assert_allclose(out["u"].values, 1.0)
+    np.testing.assert_allclose(out["v"].values, 2.0)
+    np.testing.assert_allclose(out["q"].values, 0.001)
+
+
+def test_native_height_above_sea_pressures_returns_finite_targets() -> None:
+    from fullpos import _vertical_native
+
+    ak = np.array([10000.0, 30000.0, 70000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    ps = np.array([100000.0, 95000.0], dtype=np.float64)
+    orog = np.array([0.0, 1500.0], dtype=np.float64)
+    temperature = np.asfortranarray(
+        np.array(
+            [
+                [250.0, 265.0, 280.0],
+                [252.0, 267.0, 282.0],
+            ],
+            dtype=np.float64,
+        )
+    )
+
+    out = _vertical_native.height_above_sea_pressures(
+        temperature,
+        None,
+        ak,
+        bk,
+        ps,
+        orog,
+        np.array([0.0, 500.0, 1000.0], dtype=np.float64),
+    )
+
+    assert out.shape == (2, 3)
+    assert np.isfinite(out).all()
+    np.testing.assert_allclose(out[0, 0], ps[0])
+    assert out[1, 0] > ps[1]
+    assert np.all(out[:, 1] < out[:, 0])
+    assert np.all(out[:, 2] < out[:, 1])
+
+
+def test_height_above_sea_vertical_interpolate_dataset_uses_fullpos_gpgeo_fpps() -> None:
+    ak = np.array([10000.0, 30000.0, 70000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    attrs = {"GRIB_pv": np.concatenate([ak, bk])}
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    temperature = xr.DataArray(
+        np.array([[[250.0, 252.0], [265.0, 267.0], [280.0, 282.0]]], dtype=np.float64),
+        dims=("time", "hybrid", "values"),
+        coords=coords,
+        attrs=attrs,
+        name="t",
+    )
+    ds = xr.Dataset(
+        {
+            "t": temperature,
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=temperature.dims, coords=coords, attrs=attrs),
+            "v": xr.DataArray(np.full((1, 3, 2), 2.0), dims=temperature.dims, coords=coords, attrs=attrs),
+            "q": xr.DataArray(np.full((1, 3, 2), 0.001), dims=temperature.dims, coords=coords, attrs=attrs),
+            "z": xr.DataArray(np.array([0.0, 1500.0], dtype=np.float64), dims=("values",), coords={"values": [0, 1]}),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 100000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    out = vertical_interpolate(
+        ds,
+        target="height_above_sea",
+        levels=[0.0, 500.0],
+        variables=["u", "v", "q"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert set(out.data_vars) == {"u", "v", "q"}
+    assert out["u"].dims == ("time", "height_above_sea", "values")
+    assert out["u"].attrs["vertical_backend"] == "FULLPOS"
+    assert out["u"].attrs["vertical_target"] == "height_above_sea"
+    assert out["u"].attrs["vertical_native_path"].startswith("GPHPRE/GPGEO/FPPS")
+    np.testing.assert_allclose(out["height_above_sea"].values, [0.0, 500.0])
+    np.testing.assert_allclose(out["u"].values, 1.0)
+    np.testing.assert_allclose(out["v"].values, 2.0)
+    np.testing.assert_allclose(out["q"].values, 0.001)
+
+
+def test_flight_level_matches_equivalent_height_above_sea_pressures() -> None:
+    ak = np.array([10000.0, 30000.0, 70000.0, 100000.0], dtype=np.float64)
+    bk = np.zeros(4, dtype=np.float64)
+    attrs = {"GRIB_pv": np.concatenate([ak, bk])}
+    coords = {"time": [0], "hybrid": [1, 2, 3], "values": [0, 1]}
+    temperature = xr.DataArray(
+        np.array([[[250.0, 252.0], [265.0, 267.0], [280.0, 282.0]]], dtype=np.float64),
+        dims=("time", "hybrid", "values"),
+        coords=coords,
+        attrs=attrs,
+        name="t",
+    )
+    ds = xr.Dataset(
+        {
+            "t": temperature,
+            "u": xr.DataArray(np.ones((1, 3, 2)), dims=temperature.dims, coords=coords, attrs=attrs),
+            "z": xr.DataArray(np.array([0.0, 1500.0], dtype=np.float64), dims=("values",), coords={"values": [0, 1]}),
+        }
+    )
+    sp = xr.DataArray(np.full((1, 2), 100000.0), dims=("time", "values"), coords={"time": [0], "values": [0, 1]})
+
+    flight = vertical_interpolate(
+        ds,
+        target="flight_level",
+        levels=[10.0, 20.0],
+        variables=["u"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+    height = vertical_interpolate(
+        ds,
+        target="height_above_sea",
+        levels=[304.8, 609.6],
+        variables=["u"],
+        chunks={"time": 1},
+        surface_pressure=sp,
+    )
+
+    assert flight["u"].dims == ("time", "flight_level", "values")
+    assert flight["u"].attrs["vertical_backend"] == "FULLPOS"
+    assert flight["u"].attrs["vertical_target"] == "flight_level"
+    assert flight["u"].attrs["flight_level_units"] == "hundreds of feet"
+    np.testing.assert_allclose(flight["flight_level"].values, [10.0, 20.0])
+    np.testing.assert_allclose(flight["u"].values, height["u"].values)
 
 
 def test_native_potential_vorticity_pressures_returns_finite_targets() -> None:

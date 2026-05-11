@@ -198,6 +198,7 @@ def diagnose_potential_vorticity(
 
 @dataclass(frozen=True)
 class _PreparedPvFields:
+    """Native-ready PV diagnostic fields prepared in Python."""
     relative_vorticity: xr.DataArray
     temperature_meridional_gradient: xr.DataArray
     temperature_zonal_gradient: xr.DataArray
@@ -211,6 +212,7 @@ def _validate_pv_core_inputs(
     v: xr.DataArray,
     temperature: xr.DataArray,
 ) -> None:
+    """Validate the minimal PV inputs before any native diagnostic call."""
     for name, obj in {
         "u": u,
         "v": v,
@@ -232,6 +234,7 @@ def _validate_pv_prepared_inputs(
     temperature_meridional_gradient: xr.DataArray,
     temperature_zonal_gradient: xr.DataArray,
 ) -> None:
+    """Validate fields that are already prepared for native GPPVO."""
     for name, obj in {
         "relative_vorticity": relative_vorticity,
         "temperature_meridional_gradient": temperature_meridional_gradient,
@@ -253,6 +256,7 @@ def _needs_ectrans_diagnostics(
     surface_pressure_meridional_gradient,
     surface_pressure_zonal_gradient,
 ) -> bool:
+    """Check whether native ECTRANS diagnostics are still needed."""
     return any(
         obj is None
         for obj in (
@@ -278,6 +282,7 @@ def _prepare_ectrans_diagnostics(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> _PreparedPvFields:
+    """Prepare ECTRANS diagnostics in Python before native FULLPOS calls."""
     _validate_spectral_chunks(temperature, hybrid_dim=hybrid_dim, horizontal_dims=horizontal_dims, chunks=chunks)
     ntrunc = _normalize_ntrunc(grid, ntrunc)
     rel_vort_values = np.empty(temperature.shape, dtype=np.float64)
@@ -357,6 +362,7 @@ def _run_ectrans_diagnostics_block(
     hybrid_dim: str,
     ntrunc: int,
 ) -> _PreparedPvFields:
+    """Run one native ECTRANS diagnostic block for PV preparation."""
     add_native_runtime_dir()
     from fullpos import _ectrans
 
@@ -446,6 +452,7 @@ def _resolve_kappa(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Resolve kappa before handing moisture information to native GPRCP."""
     if kappa is not None:
         if not isinstance(kappa, xr.DataArray):
             raise TypeError("kappa must be an xarray.DataArray")
@@ -472,6 +479,7 @@ def _compute_gprcp_kappa(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Compute kappa with the native FULLPOS GPRCP kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -492,6 +500,7 @@ def _compute_gprcp_kappa(
 
 
 def _resolve_grid(obj: xr.DataArray, *, source_grid: str | GaussianGrid | None) -> GaussianGrid:
+    """Resolve the Gaussian grid used by the native ECTRANS path."""
     if isinstance(source_grid, GaussianGrid):
         return source_grid
     if source_grid is not None:
@@ -503,6 +512,7 @@ def _resolve_grid(obj: xr.DataArray, *, source_grid: str | GaussianGrid | None) 
 
 
 def _horizontal_dims(obj: xr.DataArray, grid: GaussianGrid) -> tuple[str, ...]:
+    """Identify the horizontal dimensions expected by the native grid."""
     if grid.is_reduced:
         return (_find_packed_dim(obj, grid),)
     if "latitude" not in obj.dims or "longitude" not in obj.dims:
@@ -516,6 +526,7 @@ def _horizontal_dims(obj: xr.DataArray, grid: GaussianGrid) -> tuple[str, ...]:
 
 
 def _find_packed_dim(obj: xr.DataArray, grid: GaussianGrid) -> str:
+    """Find the packed horizontal dimension for a reduced Gaussian grid."""
     for dim in obj.dims:
         if obj.sizes[dim] == grid.size:
             return dim
@@ -529,6 +540,7 @@ def _auto_coriolis(
     horizontal_dims: tuple[str, ...],
     hybrid_dim: str,
 ) -> xr.DataArray:
+    """Build a Coriolis field from the grid before native PV diagnostics."""
     omega = 7.292115e-5
     lats = gaussian_latitudes(grid.nlat)
     if grid.is_reduced:
@@ -552,6 +564,7 @@ def _auto_coriolis(
 
 
 def _normalize_ntrunc(grid: GaussianGrid, ntrunc: int | None) -> int:
+    """Normalize truncation so native ECTRANS receives a valid integer."""
     max_ntrunc = grid.n - 1
     if ntrunc is None:
         return max_ntrunc
@@ -562,6 +575,7 @@ def _normalize_ntrunc(grid: GaussianGrid, ntrunc: int | None) -> int:
 
 
 def _native_pl(grid: GaussianGrid) -> np.ndarray:
+    """Build the native PL array expected by ECTRANS."""
     if grid.pl is None:
         return np.full(grid.nlat, grid.work_nlon, dtype=np.int32)
     return np.asarray(grid.pl, dtype=np.int32)
@@ -574,6 +588,7 @@ def _validate_spectral_chunks(
     horizontal_dims: tuple[str, ...],
     chunks: dict[str, int] | None,
 ) -> None:
+    """Reject chunking that would split a native spectral diagnostic block."""
     if chunks is None:
         return
     valid = set(obj.dims) - {hybrid_dim, *horizontal_dims}
@@ -592,6 +607,7 @@ def _spectral_chunk_selections(
     horizontal_dims: tuple[str, ...],
     chunks: dict[str, int] | None,
 ):
+    """Yield leading-dimension selections for native spectral diagnostics."""
     leading_dims = [dim for dim in obj.dims if dim != hybrid_dim and dim not in horizontal_dims]
     if not leading_dims:
         yield {}
@@ -609,11 +625,13 @@ def _spectral_chunk_selections(
 
 
 def _surface_selection(obj: xr.DataArray, selection: dict[str, slice]) -> xr.DataArray:
+    """Select a surface field chunk matching a spectral selection."""
     surface_selection = {dim: slc for dim, slc in selection.items() if dim in obj.dims}
     return obj.isel(surface_selection) if surface_selection else obj
 
 
 def _array_selection(selection: dict[str, slice], obj: xr.DataArray) -> tuple:
+    """Convert a selection mapping into an index tuple for one array."""
     return tuple(selection.get(dim, slice(None)) for dim in obj.dims)
 
 
@@ -624,6 +642,7 @@ def _flatten_hybrid_grid(
     hybrid_dim: str,
     horizontal_dims: tuple[str, ...],
 ) -> np.ndarray:
+    """Flatten a hybrid grid to the native ECTRANS column layout."""
     transposed = obj.transpose(*leading_dims, hybrid_dim, *horizontal_dims)
     nlev = obj.sizes[hybrid_dim]
     point_count = int(np.prod([obj.sizes[dim] for dim in horizontal_dims], dtype=np.int64))
@@ -637,6 +656,7 @@ def _flatten_surface_grid(
     leading_dims: list[str],
     horizontal_dims: tuple[str, ...],
 ) -> np.ndarray:
+    """Flatten a surface field to the native ECTRANS surface layout."""
     transposed = obj.transpose(*leading_dims, *horizontal_dims)
     point_count = int(np.prod([obj.sizes[dim] for dim in horizontal_dims], dtype=np.int64))
     arr = np.asarray(transposed.values, dtype=np.float64)
@@ -653,6 +673,7 @@ def _unflatten_hybrid_grid(
     leading_shape: tuple[int, ...],
     horizontal_shape: tuple[int, ...],
 ) -> xr.DataArray:
+    """Restore a native hybrid-grid block to the original xarray layout."""
     nlev = template.sizes[hybrid_dim]
     arr = np.asarray(values, dtype=np.float64).reshape(leading_shape + (nlev,) + horizontal_shape)
     dims = tuple(leading_dims) + (hybrid_dim,) + tuple(horizontal_dims)
@@ -668,6 +689,7 @@ def _unflatten_surface_grid(
     leading_shape: tuple[int, ...],
     horizontal_shape: tuple[int, ...],
 ) -> xr.DataArray:
+    """Restore a native surface-grid block to the original xarray layout."""
     arr = np.asarray(values, dtype=np.float64).reshape(leading_shape + horizontal_shape)
     dims = tuple(leading_dims) + tuple(horizontal_dims)
     return xr.DataArray(arr, dims=dims).transpose(*template.dims)
@@ -682,6 +704,7 @@ def _wrap_prepared_like(
     keep_attrs: bool,
     native_path: str = "ECTRANS",
 ) -> xr.DataArray:
+    """Attach Python-side metadata to a prepared native diagnostic field."""
     coords = {dim: template.coords[dim].values for dim in template.dims if dim in template.coords and template.coords[dim].ndim == 1}
     attrs = dict(template.attrs) if keep_attrs else {}
     attrs["diagnostic"] = diagnostic
@@ -699,6 +722,7 @@ def _broadcast_surface_vector(
     hybrid_dim: str,
     name: str,
 ) -> xr.DataArray:
+    """Broadcast a surface vector to the horizontal grid used by native PV."""
     if not isinstance(obj, xr.DataArray):
         raise TypeError(f"{name} must be an xarray.DataArray")
     if hybrid_dim in obj.dims:
@@ -718,6 +742,7 @@ def _wrap_diagnostic_output(
     attrs_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native GPPVO output is reshaped."""
     coords = {dim: template.coords[dim].values for dim in template.dims if dim in template.coords and template.coords[dim].ndim == 1}
     attrs = dict(template.attrs) if keep_attrs else {}
     attrs["diagnostic"] = attrs_name

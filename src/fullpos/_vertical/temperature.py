@@ -40,7 +40,11 @@ def interpolate_to_temperature(
     temperature=None,
     keep_attrs: bool = True,
 ):
-    """Interpolate fields to temperature surfaces with native FULLPOS code."""
+    """Interpolate fields to temperature surfaces with native FULLPOS code.
+
+    Python only prepares xarray inputs and target pressures; the actual
+    interpolation is performed by the native FULLPOS/Fortran kernels.
+    """
     request = prepare_temperature_request(
         values,
         levels=levels,
@@ -101,7 +105,11 @@ def prepare_temperature_request(
     hybrid_coefficients=None,
     temperature=None,
 ) -> TemperatureRequest:
-    """Validate and normalize a temperature-surface interpolation request."""
+    """Validate and normalize a temperature-surface request for native FULLPOS.
+
+    The returned request is Python-side metadata that feeds the native
+    FULLPOS pressure lookup and interpolation kernels.
+    """
     normalized_levels = _normalize_temperature_levels(levels)
     reference, selected = _validate_theta_request(values, variables=variables, chunks=chunks)
     hybrid_dim = _find_hybrid_dim(reference)
@@ -134,6 +142,7 @@ def prepare_temperature_request(
 
 
 def _normalize_temperature_levels(levels) -> np.ndarray:
+    """Normalize temperature targets before they are handed to native FULLPOS."""
     arr = np.asarray(levels, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         raise ValueError("temperature interpolation requires at least one target temperature level")
@@ -152,6 +161,7 @@ def _interpolate_data_array(
     variable_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Run the native scalar pressure kernel for one temperature target field."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -173,6 +183,7 @@ def _interpolate_wind_pair(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> tuple[xr.DataArray, xr.DataArray]:
+    """Run the native PPUV kernel for one wind pair on temperature surfaces."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -215,6 +226,7 @@ def _apply_native_scalar_kernel(
     keep_attrs: bool,
     kernel,
 ) -> xr.DataArray:
+    """Apply a native scalar pressure kernel block-by-block along leading dims."""
     hybrid_dim = request.hybrid_dim
     out_dims = tuple("temperature" if dim == hybrid_dim else dim for dim in obj.dims)
     out_shape = tuple(request.levels.size if dim == hybrid_dim else obj.sizes[dim] for dim in obj.dims)
@@ -242,6 +254,7 @@ def _temperature_target_pressures(
     request: TemperatureRequest,
     ps_block: xr.DataArray,
 ) -> np.ndarray:
+    """Compute native target pressures for temperature surfaces."""
     from fullpos import _vertical_native
 
     return _vertical_native.temperature_pressures(
@@ -261,6 +274,7 @@ def _wrap_temperature_output(
     *,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native FULLPOS temperature interpolation."""
     coords = {}
     for old_dim, new_dim in zip(template.dims, dims):
         if new_dim == "temperature":

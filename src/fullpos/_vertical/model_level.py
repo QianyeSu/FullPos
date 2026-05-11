@@ -52,7 +52,8 @@ def interpolate_to_model_levels(
 
     Target model levels are represented by target hybrid half-level
     coefficients. The native FULLPOS wrapper computes per-column target
-    full-level pressures and then runs the PP-chain interpolation.
+    full-level pressures and then runs the PP-chain interpolation. Python
+    only prepares the request and hands off to the native backend.
     """
     request = prepare_model_level_request(
         values,
@@ -109,7 +110,7 @@ def prepare_model_level_request(
     hybrid_coefficients=None,
     target_hybrid_coefficients=None,
 ) -> ModelLevelRequest:
-    """Validate and normalize a model-level interpolation request."""
+    """Normalize a model-level request before native FULLPOS interpolation."""
     reference, selected = _validate_model_level_request(values, variables=variables, chunks=chunks)
     hybrid_dim = _find_hybrid_dim(reference)
     assert hybrid_dim is not None
@@ -156,6 +157,7 @@ def _validate_model_level_request(
     variables,
     chunks: dict[str, int] | None,
 ) -> tuple[xr.DataArray, tuple[str, ...] | None]:
+    """Validate xarray inputs before model-level interpolation."""
     if isinstance(values, xr.Dataset):
         selected = list(values.data_vars) if variables is None else [str(v) for v in variables]
         missing = [name for name in selected if name not in values.data_vars]
@@ -178,6 +180,7 @@ def _interpolate_data_array(
     variable_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Dispatch a scalar field to the native model-level PP kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -199,6 +202,7 @@ def _interpolate_wind_pair(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> tuple[xr.DataArray, xr.DataArray]:
+    """Dispatch a wind pair to the native model-level PPUV kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -241,6 +245,7 @@ def _apply_native_scalar_kernel(
     keep_attrs: bool,
     kernel,
 ) -> xr.DataArray:
+    """Apply a native scalar model-level kernel block-by-block."""
     hybrid_dim = request.hybrid_dim
     nout = request.target_ak.size - 1
     out_dims = tuple("model_level" if dim == hybrid_dim else dim for dim in obj.dims)
@@ -266,6 +271,7 @@ def _target_full_level_pressures(
     request: ModelLevelRequest,
     ps: xr.DataArray,
 ) -> np.ndarray:
+    """Compute the native full-level pressures for the target hybrid grid."""
     surface = _flatten_surface_columns(ps)
     half = request.target_ak[None, :] + surface[:, None] * request.target_bk[None, :]
     full = 0.5 * (half[:, :-1] + half[:, 1:])
@@ -282,6 +288,7 @@ def _wrap_model_level_output(
     *,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native model-level interpolation."""
     coords = {}
     for old_dim, new_dim in zip(template.dims, dims):
         if new_dim == "model_level":

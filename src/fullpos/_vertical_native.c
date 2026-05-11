@@ -82,6 +82,26 @@ extern void fullpos_column_pressure_ppt_c(
     double *output,
     int *ierr);
 
+extern void fullpos_apache_column_pressure_tuvq_c(
+    const int *ncol,
+    const int *nlev,
+    const int *nout,
+    const double *temperature,
+    const double *u_values,
+    const double *v_values,
+    const double *q_values,
+    const double *ak,
+    const double *bk,
+    const double *ps,
+    const double *target_pressures,
+    const double *target_surface_pressure,
+    const int *enable_lescale,
+    double *t_output,
+    double *u_output,
+    double *v_output,
+    double *q_output,
+    int *ierr);
+
 extern void fullpos_hybrid_pressure_ppq_c(
     const int *ncol,
     const int *nlev,
@@ -155,6 +175,36 @@ extern void fullpos_temperature_pressures_c(
     const double *bk,
     const double *ps,
     const double *temperature_levels,
+    double *output,
+    int *ierr);
+
+extern void fullpos_height_above_orography_pressures_c(
+    const int *ncol,
+    const int *nlev,
+    const int *nout,
+    const double *temperature,
+    const double *specific_humidity,
+    const int *has_specific_humidity,
+    const double *ak,
+    const double *bk,
+    const double *ps,
+    const double *orography_geopotential,
+    const double *height_levels,
+    double *output,
+    int *ierr);
+
+extern void fullpos_height_above_sea_pressures_c(
+    const int *ncol,
+    const int *nlev,
+    const int *nout,
+    const double *temperature,
+    const double *specific_humidity,
+    const int *has_specific_humidity,
+    const double *ak,
+    const double *bk,
+    const double *ps,
+    const double *orography_geopotential,
+    const double *height_levels,
     double *output,
     int *ierr);
 
@@ -609,6 +659,112 @@ fail:
     Py_XDECREF(ps);
     Py_XDECREF(targets);
     Py_XDECREF(out);
+    return NULL;
+}
+
+static PyObject *apache_column_pressure_tuvq(PyObject *self, PyObject *args)
+{
+    PyObject *t_obj = NULL, *u_obj = NULL, *v_obj = NULL, *q_obj = NULL;
+    PyObject *ak_obj = NULL, *bk_obj = NULL, *ps_obj = NULL, *targets_obj = NULL;
+    PyObject *target_ps_obj = NULL;
+    PyArrayObject *t = NULL, *u = NULL, *v = NULL, *q = NULL;
+    PyArrayObject *ak = NULL, *bk = NULL, *ps = NULL, *targets = NULL, *target_ps = NULL;
+    PyArrayObject *t_out = NULL, *u_out = NULL, *v_out = NULL, *q_out = NULL;
+    int ncol, nlev, nout, ierr = 0, enable_lescale = 0;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "OOOOOOOO|Op", &t_obj, &u_obj, &v_obj, &q_obj, &ak_obj, &bk_obj, &ps_obj, &targets_obj, &target_ps_obj, &enable_lescale)) {
+        return NULL;
+    }
+    if (target_ps_obj && PyBool_Check(target_ps_obj)) {
+        enable_lescale = PyObject_IsTrue(target_ps_obj);
+        target_ps_obj = NULL;
+    }
+    t = as_fortran_array(t_obj, NPY_DOUBLE, 2, 2);
+    u = as_fortran_array(u_obj, NPY_DOUBLE, 2, 2);
+    v = as_fortran_array(v_obj, NPY_DOUBLE, 2, 2);
+    q = as_fortran_array(q_obj, NPY_DOUBLE, 2, 2);
+    ak = as_c_array(ak_obj, NPY_DOUBLE, 1, 1);
+    bk = as_c_array(bk_obj, NPY_DOUBLE, 1, 1);
+    ps = as_c_array(ps_obj, NPY_DOUBLE, 1, 1);
+    targets = as_fortran_array(targets_obj, NPY_DOUBLE, 2, 2);
+    if (target_ps_obj && target_ps_obj != Py_None) {
+        target_ps = as_c_array(target_ps_obj, NPY_DOUBLE, 1, 1);
+    } else {
+        target_ps = (PyArrayObject *)ps;
+        Py_INCREF(target_ps);
+    }
+    if (!t || !u || !v || !q || !ak || !bk || !ps || !targets ||
+        !target_ps ||
+        check_same_shape_2d(t, u, "u") != 0 ||
+        check_same_shape_2d(t, v, "v") != 0 ||
+        check_same_shape_2d(t, q, "q") != 0 ||
+        check_common(t, ak, bk, ps, ps) != 0 ||
+        check_column_pressures(t, targets) != 0 ||
+        PyArray_DIM(target_ps, 0) != PyArray_DIM(t, 0)) {
+        if (target_ps && PyArray_DIM(target_ps, 0) != PyArray_DIM(t, 0)) {
+            PyErr_SetString(PyExc_ValueError, "target_surface_pressure length must match values.shape[0]");
+        }
+        goto fail;
+    }
+    ncol = (int)PyArray_DIM(t, 0);
+    nlev = (int)PyArray_DIM(t, 1);
+    nout = (int)PyArray_DIM(targets, 1);
+    dims[0] = ncol;
+    dims[1] = nout;
+    t_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    u_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    v_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    q_out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!t_out || !u_out || !v_out || !q_out) {
+        goto fail;
+    }
+    fullpos_apache_column_pressure_tuvq_c(&ncol, &nlev, &nout,
+                                          (const double *)PyArray_DATA(t),
+                                          (const double *)PyArray_DATA(u),
+                                          (const double *)PyArray_DATA(v),
+                                          (const double *)PyArray_DATA(q),
+                                          (const double *)PyArray_DATA(ak),
+                                          (const double *)PyArray_DATA(bk),
+                                          (const double *)PyArray_DATA(ps),
+                                          (const double *)PyArray_DATA(targets),
+                                          (const double *)PyArray_DATA(target_ps),
+                                          &enable_lescale,
+                                          (double *)PyArray_DATA(t_out),
+                                          (double *)PyArray_DATA(u_out),
+                                          (double *)PyArray_DATA(v_out),
+                                          (double *)PyArray_DATA(q_out),
+                                          &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS APACHE column-pressure interpolation failed with ierr=%d", ierr);
+        goto fail;
+    }
+    Py_XDECREF(t);
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(q);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(targets);
+    Py_XDECREF(target_ps);
+    return Py_BuildValue("NNNN", (PyObject *)t_out, (PyObject *)u_out, (PyObject *)v_out, (PyObject *)q_out);
+
+fail:
+    Py_XDECREF(t);
+    Py_XDECREF(u);
+    Py_XDECREF(v);
+    Py_XDECREF(q);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(targets);
+    Py_XDECREF(target_ps);
+    Py_XDECREF(t_out);
+    Py_XDECREF(u_out);
+    Py_XDECREF(v_out);
+    Py_XDECREF(q_out);
     return NULL;
 }
 
@@ -1083,6 +1239,172 @@ fail:
     return NULL;
 }
 
+static PyObject *height_above_orography_pressures(PyObject *self, PyObject *args)
+{
+    PyObject *temperature_obj = NULL, *humidity_obj = NULL, *ak_obj = NULL, *bk_obj = NULL;
+    PyObject *ps_obj = NULL, *orog_obj = NULL, *levels_obj = NULL;
+    PyArrayObject *temperature = NULL, *humidity = NULL, *ak = NULL, *bk = NULL;
+    PyArrayObject *ps = NULL, *orog = NULL, *levels = NULL, *out = NULL;
+    int ncol, nlev, nout, ierr = 0, has_humidity = 0;
+    const double *humidity_data = NULL;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "OOOOOOO", &temperature_obj, &humidity_obj, &ak_obj, &bk_obj, &ps_obj, &orog_obj, &levels_obj)) {
+        return NULL;
+    }
+    temperature = as_fortran_array(temperature_obj, NPY_DOUBLE, 2, 2);
+    ak = as_c_array(ak_obj, NPY_DOUBLE, 1, 1);
+    bk = as_c_array(bk_obj, NPY_DOUBLE, 1, 1);
+    ps = as_c_array(ps_obj, NPY_DOUBLE, 1, 1);
+    orog = as_c_array(orog_obj, NPY_DOUBLE, 1, 1);
+    levels = as_c_array(levels_obj, NPY_DOUBLE, 1, 1);
+    if (!temperature || !ak || !bk || !ps || !orog || !levels || check_common(temperature, ak, bk, ps, levels) != 0) {
+        goto fail;
+    }
+    if (humidity_obj != Py_None) {
+        humidity = as_fortran_array(humidity_obj, NPY_DOUBLE, 2, 2);
+        if (!humidity || check_same_shape_2d(temperature, humidity, "specific_humidity") != 0) {
+            goto fail;
+        }
+        has_humidity = 1;
+        humidity_data = (const double *)PyArray_DATA(humidity);
+    } else {
+        humidity_data = (const double *)PyArray_DATA(temperature);
+    }
+    if (PyArray_DIM(orog, 0) != PyArray_DIM(temperature, 0)) {
+        PyErr_SetString(PyExc_ValueError, "orography_geopotential length must match temperature.shape[0]");
+        goto fail;
+    }
+
+    ncol = (int)PyArray_DIM(temperature, 0);
+    nlev = (int)PyArray_DIM(temperature, 1);
+    nout = (int)PyArray_DIM(levels, 0);
+    dims[0] = ncol;
+    dims[1] = nout;
+    out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!out) {
+        goto fail;
+    }
+    fullpos_height_above_orography_pressures_c(&ncol, &nlev, &nout,
+                                               (const double *)PyArray_DATA(temperature),
+                                               humidity_data,
+                                               &has_humidity,
+                                               (const double *)PyArray_DATA(ak),
+                                               (const double *)PyArray_DATA(bk),
+                                               (const double *)PyArray_DATA(ps),
+                                               (const double *)PyArray_DATA(orog),
+                                               (const double *)PyArray_DATA(levels),
+                                               (double *)PyArray_DATA(out),
+                                               &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS height-above-orography target-pressure computation failed with ierr=%d", ierr);
+        goto fail;
+    }
+    Py_XDECREF(temperature);
+    Py_XDECREF(humidity);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(orog);
+    Py_XDECREF(levels);
+    return (PyObject *)out;
+
+fail:
+    Py_XDECREF(temperature);
+    Py_XDECREF(humidity);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(orog);
+    Py_XDECREF(levels);
+    Py_XDECREF(out);
+    return NULL;
+}
+
+static PyObject *height_above_sea_pressures(PyObject *self, PyObject *args)
+{
+    PyObject *temperature_obj = NULL, *humidity_obj = NULL, *ak_obj = NULL, *bk_obj = NULL;
+    PyObject *ps_obj = NULL, *orog_obj = NULL, *levels_obj = NULL;
+    PyArrayObject *temperature = NULL, *humidity = NULL, *ak = NULL, *bk = NULL;
+    PyArrayObject *ps = NULL, *orog = NULL, *levels = NULL, *out = NULL;
+    int ncol, nlev, nout, ierr = 0, has_humidity = 0;
+    const double *humidity_data = NULL;
+    npy_intp dims[2];
+    (void)self;
+
+    if (!PyArg_ParseTuple(args, "OOOOOOO", &temperature_obj, &humidity_obj, &ak_obj, &bk_obj, &ps_obj, &orog_obj, &levels_obj)) {
+        return NULL;
+    }
+    temperature = as_fortran_array(temperature_obj, NPY_DOUBLE, 2, 2);
+    ak = as_c_array(ak_obj, NPY_DOUBLE, 1, 1);
+    bk = as_c_array(bk_obj, NPY_DOUBLE, 1, 1);
+    ps = as_c_array(ps_obj, NPY_DOUBLE, 1, 1);
+    orog = as_c_array(orog_obj, NPY_DOUBLE, 1, 1);
+    levels = as_c_array(levels_obj, NPY_DOUBLE, 1, 1);
+    if (!temperature || !ak || !bk || !ps || !orog || !levels || check_common(temperature, ak, bk, ps, levels) != 0) {
+        goto fail;
+    }
+    if (humidity_obj != Py_None) {
+        humidity = as_fortran_array(humidity_obj, NPY_DOUBLE, 2, 2);
+        if (!humidity || check_same_shape_2d(temperature, humidity, "specific_humidity") != 0) {
+            goto fail;
+        }
+        has_humidity = 1;
+        humidity_data = (const double *)PyArray_DATA(humidity);
+    } else {
+        humidity_data = (const double *)PyArray_DATA(temperature);
+    }
+    if (PyArray_DIM(orog, 0) != PyArray_DIM(temperature, 0)) {
+        PyErr_SetString(PyExc_ValueError, "orography_geopotential length must match temperature.shape[0]");
+        goto fail;
+    }
+
+    ncol = (int)PyArray_DIM(temperature, 0);
+    nlev = (int)PyArray_DIM(temperature, 1);
+    nout = (int)PyArray_DIM(levels, 0);
+    dims[0] = ncol;
+    dims[1] = nout;
+    out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+    if (!out) {
+        goto fail;
+    }
+    fullpos_height_above_sea_pressures_c(&ncol, &nlev, &nout,
+                                         (const double *)PyArray_DATA(temperature),
+                                         humidity_data,
+                                         &has_humidity,
+                                         (const double *)PyArray_DATA(ak),
+                                         (const double *)PyArray_DATA(bk),
+                                         (const double *)PyArray_DATA(ps),
+                                         (const double *)PyArray_DATA(orog),
+                                         (const double *)PyArray_DATA(levels),
+                                         (double *)PyArray_DATA(out),
+                                         &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_RuntimeError, "FULLPOS height-above-sea target-pressure computation failed with ierr=%d", ierr);
+        goto fail;
+    }
+    Py_XDECREF(temperature);
+    Py_XDECREF(humidity);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(orog);
+    Py_XDECREF(levels);
+    return (PyObject *)out;
+
+fail:
+    Py_XDECREF(temperature);
+    Py_XDECREF(humidity);
+    Py_XDECREF(ak);
+    Py_XDECREF(bk);
+    Py_XDECREF(ps);
+    Py_XDECREF(orog);
+    Py_XDECREF(levels);
+    Py_XDECREF(out);
+    return NULL;
+}
+
 static PyObject *potential_vorticity_pressures(PyObject *self, PyObject *args)
 {
     PyObject *pv_obj = NULL, *ak_obj = NULL, *bk_obj = NULL, *ps_obj = NULL, *coriolis_obj = NULL, *levels_obj = NULL;
@@ -1336,6 +1658,7 @@ static PyMethodDef methods[] = {
     {"pressure_ppq", pressure_ppq, METH_VARARGS, "Interpolate scalar fields with native FULLPOS PPQ."},
     {"pressure_ppt", pressure_ppt, METH_VARARGS, "Interpolate temperature with native FULLPOS PPT."},
     {"pressure_ppuv", pressure_ppuv, METH_VARARGS, "Interpolate wind components with native FULLPOS PPUV."},
+    {"apache_column_pressure_tuvq", apache_column_pressure_tuvq, METH_VARARGS, "Interpolate T/U/V/Q to per-column pressures with native FULLPOS APACHE."},
     {"column_pressure_ppq", column_pressure_ppq, METH_VARARGS, "Interpolate scalar fields to per-column pressures with native FULLPOS PPQ."},
     {"column_pressure_ppt", column_pressure_ppt, METH_VARARGS, "Interpolate temperature to per-column pressures with native FULLPOS PPT."},
     {"column_pressure_ppuv", column_pressure_ppuv, METH_VARARGS, "Interpolate wind components to per-column pressures with native FULLPOS PPUV."},
@@ -1345,6 +1668,8 @@ static PyMethodDef methods[] = {
     {"eta_pressures", eta_pressures, METH_VARARGS, "Compute eta/model-level-index target pressures with native FULLPOS PPLETA/GPHPRE."},
     {"theta_pressures", theta_pressures, METH_VARARGS, "Compute potential-temperature target pressures with native FULLPOS GPTET/PPLTETA."},
     {"temperature_pressures", temperature_pressures, METH_VARARGS, "Compute temperature target pressures with native FULLPOS PPLTW/FPPS."},
+    {"height_above_orography_pressures", height_above_orography_pressures, METH_VARARGS, "Compute height-above-orography target pressures with native FULLPOS GPHPRE/GPGEO/FPPS."},
+    {"height_above_sea_pressures", height_above_sea_pressures, METH_VARARGS, "Compute height-above-sea target pressures with native FULLPOS GPHPRE/GPGEO/FPPS."},
     {"potential_vorticity_pressures", potential_vorticity_pressures, METH_VARARGS, "Compute potential-vorticity target pressures with native FULLPOS PPLTP."},
     {"gprcp_kappa", gprcp_kappa, METH_VARARGS, "Compute R/Cp from specific humidity with native FULLPOS GPRCP."},
     {"diagnose_potential_vorticity", diagnose_potential_vorticity, METH_VARARGS, "Diagnose model-level potential vorticity and potential temperature with native FULLPOS GPPVO."},

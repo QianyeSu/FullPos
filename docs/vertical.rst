@@ -12,6 +12,8 @@ Current structure:
 
 * ``fullpos.vertical``: stable public shim exported by the top-level package.
 * ``fullpos._vertical.api``: public dispatch and capability reporting logic.
+* ``fullpos._vertical.pos``: internal POS-style plan registry and dispatch
+  layer for the implemented targets.
 * ``fullpos._vertical.common``: shared target naming and validation.
 * ``fullpos._vertical.pressure``: first implementation target for native
   hybrid-to-pressure interpolation.
@@ -20,7 +22,9 @@ Current implementation status:
 
 * Public target names are defined and validated.
 * ``target="pressure"`` uses the native OpenIFS/FULLPOS pressure-level
-  PP-chain backend.
+  backend. Dataset requests containing ``t``, ``u``, ``v``, and ``q`` use the
+  native ``APACHE`` core for those variables; other pressure requests use the
+  native PP-chain kernels directly.
 * ``target="model_level"`` uses a native PP-chain column-pressure backend. It
   accepts target hybrid half-level coefficients and interpolates to the
   resulting per-column target full-level pressures. The target full-level
@@ -31,6 +35,15 @@ Current implementation status:
 * ``target="temperature"`` uses vendored native ``PPLTW`` and ``FPPS`` to
   compute each target temperature surface pressure, then interpolates fields
   through the same native ``PPQ``/``PPUV``/``PPT`` kernels.
+* ``target="height_above_orography"`` uses native ``GPHPRE``/``GPGEO`` and
+  ``FPPS`` to convert heights above the supplied surface geopotential into
+  per-column target pressures, then interpolates fields through the same
+  native ``PPQ``/``PPUV``/``PPT`` kernels.
+* ``target="height_above_sea"`` uses the same native ``GPHPRE``/``GPGEO`` and
+  ``FPPS`` path with target geopotential ``g * height_m``.
+* ``target="flight_level"`` uses the same native absolute-height path as
+  ``height_above_sea``. Public levels are standard flight-level numbers, so
+  ``levels=[350]`` means ``FL350`` or 35,000 ft.
 * ``target="potential_vorticity"`` uses native ``PPLTP`` on a provided PV
   field and Coriolis input, then interpolates fields through the same native
   ``PPQ``/``PPUV``/``PPT`` kernels.
@@ -54,7 +67,20 @@ Current implementation status:
   routines ``PPINIT``, ``PPFLEV``, ``PPQ``, ``PPUV``, ``PPT``, and ``PPSTA``.
   The potential-temperature target path also calls ``GPTET`` and ``PPLTETA``.
   The temperature target path calls ``PPLTW``, ``FPPS``, and ``PPPMER``.
+  The height-above-orography target path calls ``GPHPRE``, ``GPGEO``,
+  ``GPRCP`` when ``q`` is available, ``FPPS``, and ``PPPMER``.
+  The height-above-sea target path uses the same native routines with absolute
+  target geopotential.
+  The flight-level target path converts ``FL`` numbers to metres above mean
+  sea level and then uses the same native ``GPHPRE``/``GPGEO``/``FPPS`` path.
   The eta target path calls ``PPLETA`` and ``GPHPRE``.
+
+Current boundary: the Python layer now owns a small POS-style plan registry and
+dispatch layer for the implemented targets. Pressure Dataset interpolation for
+``t``/``u``/``v``/``q`` is connected to the native ``APACHE`` core, and
+pressure requests can opt into the APACHE ``LESCALE`` branch with
+``lescale=True`` and ``target_surface_pressure=...``. This is still a Python
+orchestration layer around native kernels, not a full ``pos.F90`` binding.
 
 Native FULLPOS source boundary
 ------------------------------
@@ -66,14 +92,56 @@ The relevant chain is:
 * ``PPLETA`` computes pressure-level target pressure arrays for pressure-like
   vertical coordinates.
 * ``APACHE`` performs the basic-field vertical interpolation.
+* ``LESCALE`` adds the later post-processing and surface/derived-field
+  handling that surrounds the core interpolation.
 * ``GPHPRE``, ``GPGEO``, ``GPRCP``, and ``GPRH`` prepare hydrostatic pressure,
   geopotential, moist thermodynamic constants, and relative humidity context.
 
-The current backend is intentionally a smaller native PP-chain wrapper, not the
-complete ``APACHE``/``LESCALE`` workflow. ``APACHE`` also pulls in OpenIFS
-geometry, moist thermodynamic, geopotential, and ESCALE state such as
-``FPVIEW``, ``GPHPRE``, ``GPRCP``, ``GPRH``, and ``PPGEOP``. Those dependencies
-are still outside the Python extension boundary.
+Completed
+---------
+
+* Pressure Dataset interpolation for ``t``/``u``/``v``/``q`` now reaches the
+  native ``APACHE`` core.
+* Pressure Dataset interpolation can enable the native APACHE ``LESCALE``
+  branch with ``lescale=True`` and an optional ``target_surface_pressure``.
+* Native pressure lookups for the implemented targets use the Fortran PP-chain
+  path rather than a Python fallback.
+* ``diagnose_potential_vorticity`` can auto-prepare the required diagnostic
+  inputs when the Dataset provides the standard model-level fields.
+
+Partial
+-------
+
+* The current backend is still a smaller native wrapper around APACHE and the
+  PP-chain, not the full ``POS`` workflow.
+* Several preparation routines are now wrapped directly for specific targets,
+  including ``GPHPRE``, ``GPGEO``, ``GPRCP``, and ``FPPS`` for height targets.
+* The full path still needs additional OpenIFS geometry, moist thermodynamic,
+  relative-humidity, and ESCALE state such as ``FPVIEW``, ``GPRH``, and
+  ``PPGEOP``.
+
+Not complete
+------------
+
+* The complete ``POS`` model-level copy branch.
+* Full ``POS``-driven surface and derived-field post-processing around the
+  pressure requests.
+* Surface-field special processing and the remaining geometry-dependent
+  branches.
+* Any claim that the current implementation is the exact full native vertical
+  post-processing path.
+
+Next milestones
+---------------
+
+The active vertical milestone is pressure-level interpolation. The immediate
+goal is to keep ``target="pressure"`` stable for ERA5/OpenIFS model-level
+Datasets, including the native ``APACHE`` path for ``t``/``u``/``v``/``q``.
+
+The POS-style registry should remain a small internal extension point. Full
+``POS`` orchestration, surface special cases, height/flight derived workflows,
+and additional target families should be developed only when they become the
+selected next feature.
 
 Usage
 -----
@@ -97,6 +165,28 @@ model-level ERA5/OpenIFS fields:
 Temperature uses ``PPT``, paired ``u``/``v`` variables use ``PPUV``, and other
 scalar variables use ``PPQ``. The Python layer only validates metadata, chunks
 leading dimensions, aligns surface pressure, and restores xarray metadata.
+
+When the Dataset contains ``t``, ``u``, ``v``, and ``q``, those variables are
+sent through native ``APACHE`` together. To enable APACHE ``LESCALE`` for a
+pressure request, pass a target surface pressure field:
+
+.. code-block:: python
+
+   out = vertical_interpolate(
+       ds,
+       target="pressure",
+       levels=[30000, 50000, 85000],
+       variables=["t", "u", "v", "q"],
+       chunks={"time": 1, "values": 10000},
+       surface_pressure=surface_ds["sp"],
+       target_surface_pressure=target_surface_ds["sp"],
+       lescale=True,
+   )
+
+``target_surface_pressure`` must be an xarray ``DataArray`` aligned to the same
+non-hybrid dimensions as ``surface_pressure``. If it is omitted, APACHE uses the
+source surface pressure. ``lescale=True`` is only valid for Dataset inputs that
+contain all four APACHE variables ``t``, ``u``, ``v``, and ``q``.
 
 Model-level Target
 ------------------
@@ -178,6 +268,92 @@ available FULLPOS ``PPLTW`` routine to locate the target-temperature
 geopotential and ``FPPS`` to convert that surface geopotential to pressure
 before interpolation. This keeps the numerical path in Fortran/FULLPOS, but it
 is not yet the exact missing ``PPLTEMP`` branch from full ``POS``.
+
+Height Above Orography Target
+-----------------------------
+
+Use ``target="height_above_orography"`` for surfaces defined by geometric
+height in metres above local orography:
+
+.. code-block:: python
+
+   out = vertical_interpolate(
+       ds,
+       target="height_above_orography",
+       levels=[0.0, 100.0, 500.0, 1000.0],
+       variables=["t", "u", "v", "q"],
+       chunks={"time": 1, "values": 10000},
+       surface_pressure=surface_ds["sp"],
+       orography_geopotential=orography_ds["z"].isel(time=0, drop=True),
+   )
+
+The target ``levels`` are metres above orography. ``orography_geopotential``
+must be the ECMWF surface geopotential in ``m2 s-2``. For ``Dataset`` input,
+variable ``t`` is used automatically for the hydrostatic geopotential
+calculation, and variable ``q`` is used automatically by native ``GPRCP`` to
+compute moist ``R`` when it is present. If no ``q`` field is supplied, the
+native wrapper uses dry-air ``R``.
+
+The target pressure calculation is native Fortran: ``GPHPRE`` computes
+half-level pressure and pressure metrics, ``GPGEO`` reconstructs half-level
+geopotential from temperature and ``R``, and ``FPPS`` converts the requested
+height surfaces to per-column pressures. The field interpolation then reuses
+the same native ``PPQ``/``PPUV``/``PPT`` kernels as pressure-level output.
+
+Height Above Sea Target
+-----------------------
+
+Use ``target="height_above_sea"`` for surfaces defined by absolute geometric
+height in metres above mean sea level:
+
+.. code-block:: python
+
+   out = vertical_interpolate(
+       ds,
+       target="height_above_sea",
+       levels=[0.0, 100.0, 500.0, 1000.0],
+       variables=["t", "u", "v", "q"],
+       chunks={"time": 1, "values": 10000},
+       surface_pressure=surface_ds["sp"],
+       orography_geopotential=orography_ds["z"].isel(time=0, drop=True),
+   )
+
+The input requirements match ``target="height_above_orography"``: temperature
+is required for ``GPGEO`` and ECMWF surface geopotential ``z`` is required for
+the source column geometry. The difference is the target surface definition:
+``height_above_orography`` uses ``surface_geopotential + g * level`` while
+``height_above_sea`` uses ``g * level``. Therefore the 0 m sea-level target is
+not generally equal to the model surface pressure over land or below-sea
+terrain.
+
+Flight Level Target
+-------------------
+
+Use ``target="flight_level"`` for aircraft-style flight levels:
+
+.. code-block:: python
+
+   out = vertical_interpolate(
+       ds,
+       target="flight_level",
+       levels=[100.0, 200.0, 300.0, 350.0],
+       variables=["t", "u", "v", "q"],
+       chunks={"time": 1, "values": 10000},
+       surface_pressure=surface_ds["sp"],
+       orography_geopotential=orography_ds["z"].isel(time=0, drop=True),
+   )
+
+The target ``levels`` are flight-level numbers in hundreds of feet. For
+example, ``350`` means ``FL350`` or 35,000 ft, which is converted internally to
+10,668 m above mean sea level. This conversion is only unit handling in the
+Python layer; the target-pressure lookup and field interpolation still use the
+native FULLPOS/OpenIFS Fortran path.
+
+Internally, ``flight_level`` uses the same absolute-height pressure lookup as
+``height_above_sea`` after converting ``FL`` values to metres. The wrapper then
+interpolates fields with the native ``PPQ``/``PPUV``/``PPT`` kernels. The
+output dimension is named ``flight_level`` and stores the original ``FL``
+numbers.
 
 Potential-vorticity Target
 --------------------------

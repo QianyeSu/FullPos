@@ -15,7 +15,11 @@ SUPPORTED_VERTICAL_TARGETS = (
 
 
 def normalize_vertical_target(target: str) -> str:
-    """Normalize and validate a public vertical target name."""
+    """Normalize a public vertical target name used by the FULLPOS dispatch.
+
+    This is a Python-side gate only; native backend handling is chosen later
+    by the target-specific wrapper.
+    """
     normalized = str(target).lower()
     if normalized not in SUPPORTED_VERTICAL_TARGETS:
         raise ValueError(

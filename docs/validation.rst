@@ -14,7 +14,7 @@ The latest recorded full local run before this documentation page was written:
 
 .. code-block:: text
 
-   105 passed in 30.76s
+   120 passed in 39.45s
 
 Native Kernel Checks
 --------------------
@@ -32,13 +32,13 @@ formulas:
 Real Data Checks
 ----------------
 
-The native regular-grid horizontal path was checked on real ERA5 F96 data. The
-exact local file path is machine-specific; the recorded sample used a decoded
-F96 ``regular_gg`` model-level temperature field.
+The native regular-grid horizontal path was checked on real ERA5 F96 data.
+Use a locally available decoded F96 ``regular_gg`` model-level temperature
+field when reproducing the check.
 
 .. code-block:: text
 
-   input:  <path-to-f96-model-level-grib>
+   input:  <f96-model-level-grib>
    field:  t(time=0, hybrid=0)
    method: nearest
    RMSE:   0.0
@@ -46,7 +46,7 @@ F96 ``regular_gg`` model-level temperature field.
 
 .. code-block:: text
 
-   input:  <path-to-f96-model-level-grib>
+   input:  <f96-model-level-grib>
    field:  t(time=0, hybrid=0)
    method: bilinear
    RMSE:   4.584093342540204e-15
@@ -54,7 +54,7 @@ F96 ``regular_gg`` model-level temperature field.
 
 .. code-block:: text
 
-   input:  <path-to-f96-model-level-grib>
+   input:  <f96-model-level-grib>
    field:  t(time=0, hybrid=0)
    method: quadratic12
    RMSE:   6.8512788032415326e-15
@@ -62,7 +62,7 @@ F96 ``regular_gg`` model-level temperature field.
 
 .. code-block:: text
 
-   input:  <path-to-f96-model-level-grib>
+   input:  <f96-model-level-grib>
    field:  t(time=0, hybrid=0)
    method: average
    RMSE:   0.0
@@ -87,10 +87,18 @@ on the same O96 grid for ``t/u/v/q`` at 200, 300, 400, and 500 hPa:
    q overall RMSE: 4.00771e-06,    max_abs: 5.84819e-04
    200 hPa t/u/v RMSE: 0.04056 / 0.03458 / 0.03500
 
-The full JSON metric record from this run is
-``fullpos_native_pressure_reference_metrics_19781201_o96_200_300_400_500.json``.
-A Panoply-readable NetCDF sample was also written as
-``fullpos_native_pressure_o96_tuvq_200_300_400_500.nc``.
+The full JSON metric record from this run was written as a project-local
+metrics artifact, and a Panoply-readable NetCDF sample was also produced for
+the same pressure-grid comparison.
+
+The real-data pytest smoke for this stage uses the same native pressure path
+but does not require a fixed local file location. It reads the model-level and
+surface inputs from ``FULLPOS_ERA5_MODEL_FILE`` and
+``FULLPOS_ERA5_SURFACE_FILE`` when those environment variables are set; if
+either file is missing the test is skipped. The check targets 200, 300, and
+500 hPa for ``t/u/v/q``, verifies the native ``FULLPOS``/``APACHE`` attrs, and
+uses an internal self-consistency comparison between the per-variable pressure
+outputs.
 
 The native hybrid-target wrapper was also smoke-tested on the same O96
 model-level data for ``target="model_level"``. Target full-level pressures are
@@ -120,6 +128,76 @@ from vendored ``PPLTW``/``FPPS``. Dataset-level tests verify
 ``target="temperature"`` uses dataset ``t`` to locate target surfaces and then
 interpolates ``u``/``v``/``q`` through native PP-chain kernels.
 
+Native height-above-orography target-pressure calculation is covered by a
+low-level check that calls ``height_above_orography_pressures`` and verifies
+finite pressures, exact agreement between the 0 m target and surface pressure,
+and pressure decrease with increasing height. Dataset-level tests verify
+``target="height_above_orography"`` uses dataset ``t`` and optional ``q``,
+accepts ECMWF surface geopotential ``z``, broadcasts static orography over
+time, and interpolates ``u``/``v``/``q`` through native PP-chain kernels.
+
+The same path was checked on real ERA5 O96 reduced-grid data. A model-level
+``(time=1, hybrid=137, values=40320)`` sample, matching surface pressure, and
+O96 surface geopotential were processed at 0, 100, 500, 1000, and 3000 m above
+orography:
+
+.. code-block:: text
+
+   backend: FULLPOS GPHPRE/GPGEO/FPPS + PP-chain
+   output:  t/u/v/q(time=1, height_above_orography=5, values=40320)
+   target pressure finite fraction: 1.0
+   height 0 m surface-pressure max_abs_error: 0.0 Pa
+   pressure strictly decreases with height fraction: 1.0
+   target pressure range: 33238.64 .. 104378.45 Pa
+
+The Panoply-readable sample output was recorded as a project-local NetCDF
+artifact with a matching metrics JSON file.
+
+Native height-above-sea target-pressure calculation is covered by the same
+low-level and Dataset-level checks. The low-level check verifies finite
+pressures, exact agreement between the 0 m sea-level target and surface
+pressure for a zero-orography column, greater-than-surface pressure for a
+positive-orography column at 0 m, and pressure decrease with increasing
+absolute height.
+
+The same ERA5 O96 sample was processed at 0, 100, 500, 1000, and 3000 m above
+sea level:
+
+.. code-block:: text
+
+   backend: FULLPOS GPHPRE/GPGEO/FPPS + PP-chain
+   output:  t/u/v/q(time=1, height_above_sea=5, values=40320)
+   target pressure finite fraction: 1.0
+   pressure strictly decreases with height fraction: 1.0
+   target pressure range: 64941.76 .. 105808.47 Pa
+   surface height range: -100.54 .. 5535.45 m
+
+The Panoply-readable sample output was recorded as a project-local NetCDF
+artifact with a matching metrics JSON file.
+
+Native flight-level interpolation is covered by a Dataset-level check that
+compares ``target="flight_level"`` against the equivalent
+``target="height_above_sea"`` request after converting flight-level numbers to
+metres. For example, ``FL10`` and ``FL20`` are checked against 304.8 m and
+609.6 m above mean sea level. The numerical pressure lookup and field
+interpolation remain on the native FULLPOS ``GPHPRE``/``GPGEO``/``FPPS`` plus
+PP-chain path.
+
+The same ERA5 O96 sample was processed at ``FL100``, ``FL200``, ``FL300``, and
+``FL350`` for ``t/u/v/q``. The output was compared with
+``target="height_above_sea"`` at 3048, 6096, 9144, and 10668 m:
+
+.. code-block:: text
+
+   backend: FULLPOS GPHPRE/GPGEO/FPPS + PP-chain
+   output:  t/u/v/q(time=1, flight_level=4, values=40320)
+   finite fraction: 1.0 for all variables
+   equivalence RMSE: 0.0 for t/u/v/q
+   equivalence max_abs: 0.0 for t/u/v/q
+
+The Panoply-readable sample output was recorded as a project-local NetCDF
+artifact with a matching metrics JSON file.
+
 Skyborn's compiled ``interp_hybrid_to_pressure`` path was then used as a
 development reference on the same O96 packed ERA5 input. For ERA5 the helper
 uses ``p0=1`` because the hybrid ``A`` coefficients are pressure-unit
@@ -127,7 +205,7 @@ uses ``p0=1`` because the hybrid ``A`` coefficients are pressure-unit
 
 .. code-block:: text
 
-   input:  <path-to-o96-model-level-grib>
+   input:  <o96-model-level-grib>
    field:  t(time, hybrid, values)
    levels: [100000, 85000, 50000] Pa
    p0:     1.0

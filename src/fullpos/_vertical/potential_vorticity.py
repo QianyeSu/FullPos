@@ -62,6 +62,8 @@ def interpolate_to_potential_vorticity(
     ``u``/``v``/``t``/``q`` with native ECTRANS + FULLPOS ``GPRCP``/``GPPVO``.
     The requested variables are then interpolated with the same native
     ``PPQ``/``PPUV``/``PPT`` kernels used by the other vertical targets.
+    Python only orchestrates request validation, optional PV diagnosis, and
+    the handoff into native FULLPOS routines.
     """
     request = prepare_potential_vorticity_request(
         values,
@@ -133,7 +135,7 @@ def prepare_potential_vorticity_request(
     specific_humidity=None,
     keep_attrs: bool = True,
 ) -> PotentialVorticityRequest:
-    """Validate and normalize an iso-PV interpolation request."""
+    """Normalize an iso-PV request before native FULLPOS interpolation."""
     normalized_levels = _normalize_pv_levels(levels)
     reference, selected = _validate_pv_request(
         values,
@@ -189,6 +191,7 @@ def _validate_pv_request(
     variables,
     chunks: dict[str, int] | None,
 ) -> tuple[xr.DataArray, tuple[str, ...] | None]:
+    """Validate xarray inputs before PV target lookup."""
     if isinstance(values, xr.Dataset):
         selected = list(values.data_vars) if variables is None else [str(v) for v in variables]
         missing = [name for name in selected if name not in values.data_vars]
@@ -220,6 +223,7 @@ def _resolve_pv_field(
     specific_humidity,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Resolve the PV field used by native FULLPOS iso-PV interpolation."""
     if potential_vorticity is None:
         if isinstance(values, xr.Dataset):
             for name in ("potential_vorticity", "pv"):
@@ -269,6 +273,7 @@ def _diagnose_pv_from_dataset(
     specific_humidity,
     keep_attrs: bool,
 ) -> xr.DataArray | None:
+    """Diagnose PV from Dataset inputs when an explicit PV field is absent."""
     if not isinstance(values, xr.Dataset):
         return None
     u = _find_dataset_field(values, ("u", "eastward_wind", "u_component_of_wind"))
@@ -307,6 +312,7 @@ def _diagnose_pv_from_dataset(
 
 
 def _with_reference_attrs_for_diagnostic(temperature: xr.DataArray, reference: xr.DataArray) -> xr.DataArray:
+    """Copy selected GRIB metadata onto a diagnostic field for native use."""
     missing = [
         name
         for name in ("GRIB_pv", "GRIB_gridType", "GRIB_N", "GRIB_numberOfPoints", "GRIB_pl")
@@ -323,6 +329,7 @@ def _with_reference_attrs_for_diagnostic(temperature: xr.DataArray, reference: x
 
 
 def _find_dataset_field(ds: xr.Dataset, names: tuple[str, ...]) -> xr.DataArray | None:
+    """Find a dataset variable by name, GRIB short name, or standard name."""
     normalized = {name.lower() for name in names}
     for name in names:
         if name in ds:
@@ -346,6 +353,7 @@ def _resolve_coriolis(
     coriolis,
     source_grid: str | GaussianGrid | None = None,
 ) -> xr.DataArray:
+    """Resolve the Coriolis field required by native PV interpolation."""
     if coriolis is None:
         coriolis = _infer_coriolis_from_coords(reference)
         if coriolis is None and source_grid is not None:
@@ -368,6 +376,7 @@ def _resolve_coriolis(
 
 
 def _infer_coriolis_from_coords(reference: xr.DataArray) -> xr.DataArray | None:
+    """Infer a Coriolis field from latitude coordinates when possible."""
     lat = None
     for name in ("latitude", "lat"):
         if name in reference.coords:
@@ -385,6 +394,7 @@ def _infer_coriolis_from_grid(
     hybrid_dim: str,
     source_grid: str | GaussianGrid,
 ) -> xr.DataArray | None:
+    """Infer a Coriolis field from the declared Gaussian grid."""
     grid = source_grid if isinstance(source_grid, GaussianGrid) else parse_grid(str(source_grid))
     lats = gaussian_latitudes(grid.nlat)
     base = reference.isel({hybrid_dim: 0}, drop=True)
@@ -423,6 +433,7 @@ def _infer_coriolis_from_grid(
 
 
 def _normalize_pv_levels(levels) -> np.ndarray:
+    """Normalize positive PV targets before native dispatch."""
     arr = np.asarray(levels, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         raise ValueError("potential-vorticity interpolation requires at least one target level")
@@ -441,6 +452,7 @@ def _interpolate_data_array(
     variable_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Dispatch a scalar field to the native iso-PV pressure kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -462,6 +474,7 @@ def _interpolate_wind_pair(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> tuple[xr.DataArray, xr.DataArray]:
+    """Dispatch a wind pair to the native iso-PV PPUV kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -505,6 +518,7 @@ def _apply_native_scalar_kernel(
     keep_attrs: bool,
     kernel,
 ) -> xr.DataArray:
+    """Apply a native scalar iso-PV kernel block-by-block."""
     hybrid_dim = request.hybrid_dim
     out_dims = tuple("potential_vorticity" if dim == hybrid_dim else dim for dim in obj.dims)
     out_shape = tuple(request.levels.size if dim == hybrid_dim else obj.sizes[dim] for dim in obj.dims)
@@ -534,6 +548,7 @@ def _pv_target_pressures(
     ps_block: xr.DataArray,
     coriolis_block: xr.DataArray,
 ) -> np.ndarray:
+    """Compute native target pressures for iso-PV surfaces."""
     from fullpos import _vertical_native
 
     return _vertical_native.potential_vorticity_pressures(
@@ -554,6 +569,7 @@ def _wrap_pv_output(
     *,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native PV interpolation."""
     coords = {}
     for old_dim, new_dim in zip(template.dims, dims):
         if new_dim == "potential_vorticity":

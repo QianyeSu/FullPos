@@ -90,3 +90,39 @@ The implemented filtering path covers generic spectral coefficient weighting,
 Gaussian profiles, low-pass profiles, and read/write helpers. FULLPOS
 post-processing level-specific filtering and stretched-geometry filtering are
 not complete user-level APIs yet.
+
+Completed
+---------
+
+* Spectral filtering through ``spectral_filter`` and
+  ``generic_spectral_filter``.
+* Direct coefficient filtering through ``filter_spectral_coefficients``.
+* Filter read/write helpers for stored filter objects.
+
+Partial
+-------
+
+* The current Python implementation covers generic spectral coefficient
+  weighting and the common Gaussian and low-pass profiles.
+* The code operates on native ECTRANS coefficient arrays, but the filter
+  profiles are still assembled in Python rather than by a full wrapper around
+  every native ``fpfilter.F90`` branch.
+
+Not complete
+------------
+
+* ``stretched geometry filter`` means the FULLPOS filtering branch that is
+  aware of stretched-grid geometry and the associated geometry-specific
+  interpolation rules. That branch is not exposed as a user-level API yet.
+* ``post-processing level-specific filtering`` means the FULLPOS branch where
+  the applied filter depends on the post-processing level or output level
+  family. That branch is also not complete in the current Python wrapper.
+* FULLPOS parity for every ``fpfilter.F90`` branch.
+
+Next milestones
+---------------
+
+* Add a native wrapper for the remaining ``fpfilter.F90`` branches.
+* Define the stretched-geometry path explicitly at the user API boundary.
+* Add level-specific filter selection once the corresponding FULLPOS semantics
+  are exposed cleanly.

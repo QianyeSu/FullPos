@@ -50,6 +50,7 @@ def interpolate_to_eta(
     The target pressures are computed by native OpenIFS/FULLPOS ``PPLETA``
     and ``GPHPRE`` from integer eta level indexes. The resulting per-column
     pressures are then passed to the native ``PPQ``/``PPUV``/``PPT`` kernels.
+    Python only validates inputs and shapes around that native boundary.
     """
     request = prepare_eta_request(
         values,
@@ -109,7 +110,7 @@ def prepare_eta_request(
     surface_pressure=None,
     hybrid_coefficients=None,
 ) -> EtaRequest:
-    """Validate and normalize an eta/model-level-index interpolation request."""
+    """Normalize an eta request before the native FULLPOS pressure lookup."""
     normalized_levels = _normalize_eta_levels(levels)
     reference, selected = _validate_eta_request(values, variables=variables, chunks=chunks)
     hybrid_dim = _find_hybrid_dim(reference)
@@ -150,6 +151,7 @@ def _validate_eta_request(
     variables,
     chunks: dict[str, int] | None,
 ) -> tuple[xr.DataArray, tuple[str, ...] | None]:
+    """Validate xarray inputs before native eta interpolation."""
     if isinstance(values, xr.Dataset):
         selected = list(values.data_vars) if variables is None else [str(v) for v in variables]
         missing = [name for name in selected if name not in values.data_vars]
@@ -165,6 +167,7 @@ def _validate_eta_request(
 
 
 def _normalize_eta_levels(levels) -> np.ndarray:
+    """Normalize eta/model-level indexes before native dispatch."""
     arr = np.asarray(levels, dtype=np.float64).reshape(-1)
     if arr.size == 0:
         raise ValueError("eta interpolation requires at least one target level")
@@ -186,6 +189,7 @@ def _interpolate_data_array(
     variable_name: str,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Dispatch a scalar field to the native eta pressure kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -207,6 +211,7 @@ def _interpolate_wind_pair(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
 ) -> tuple[xr.DataArray, xr.DataArray]:
+    """Dispatch a wind pair to the native eta PPUV kernel."""
     add_native_runtime_dir()
     from fullpos import _vertical_native
 
@@ -248,6 +253,7 @@ def _apply_native_scalar_kernel(
     keep_attrs: bool,
     kernel,
 ) -> xr.DataArray:
+    """Apply a native scalar eta kernel block-by-block."""
     hybrid_dim = request.hybrid_dim
     out_dims = tuple("eta" if dim == hybrid_dim else dim for dim in obj.dims)
     out_shape = tuple(request.levels.size if dim == hybrid_dim else obj.sizes[dim] for dim in obj.dims)
@@ -273,6 +279,7 @@ def _eta_target_pressures(
     request: EtaRequest,
     ps_block: xr.DataArray,
 ) -> np.ndarray:
+    """Compute native target pressures for eta model-level indexes."""
     from fullpos import _vertical_native
 
     return _vertical_native.eta_pressures(
@@ -289,6 +296,7 @@ def _unflatten_eta_output_columns(
     hybrid_dim: str,
     nlevels: int,
 ) -> np.ndarray:
+    """Restore native eta output columns to the original xarray layout."""
     other_dims = [dim for dim in source_block.dims if dim != hybrid_dim]
     shape_other = tuple(source_block.sizes[dim] for dim in other_dims)
     arr = np.asarray(native, dtype=np.float64).reshape(shape_other + (nlevels,))
@@ -305,6 +313,7 @@ def _wrap_eta_output(
     *,
     keep_attrs: bool,
 ) -> xr.DataArray:
+    """Attach Python-side metadata after native eta interpolation."""
     coords = {}
     dim_map = dict(zip(template.dims, dims))
     for old_dim, new_dim in zip(template.dims, dims):
@@ -339,6 +348,6 @@ def _coord_uses_hybrid_dim(
     old_dims: tuple[str, ...],
     new_dims: tuple[str, ...],
 ) -> bool:
-    """Return True for original vertical coordinates that should not be copied."""
+    """Return True for coordinates tied to the original hybrid dimension."""
     hybrid_dims = {old for old, new in zip(old_dims, new_dims) if new == "eta"}
     return any(dim in hybrid_dims for dim in coord.dims)
