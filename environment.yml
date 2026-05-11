@@ -1,0 +1,23 @@
+name: skyborn_dev
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.9
+  - numpy
+  - xarray
+  - skyborn
+  - netcdf4
+  - h5netcdf
+  - eccodes
+  - cfgrib
+  - gfortran
+  - gcc
+  - pkg-config
+  - meson
+  - meson-python
+  - ninja
+  - pytest
+  - pytest-cov
+  - build
+  - pip

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+
+# (C) Copyright 2020- ECMWF.
+#
+# This software is licensed under the terms of the Apache Licence Version 2.0
+# which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
+# In applying this licence, ECMWF does not waive the privileges and immunities
+# granted to it by virtue of its status as an intergovernmental organisation
+# nor does it submit to any jurisdiction.
+
+FIAT_VERSION_STR="1.0.0"
+FIAT_VERSION="1.0.0"
+FIAT_GIT_SHA1=""
+
+#################################################################
+# Commands
+#################################################################
+
+usage()
+{
+  echo "Usage: fiat [--version] [--info] [--git]"
+  exit $1
+}
+
+version()
+{
+  echo "${FIAT_VERSION_STR}"
+}
+
+append_git()
+{
+  if (( $# > b )); then
+    git="$@"
+    echo ", git-sha1 ${git::${#git}-33}"
+  fi
+}
+
+info()
+{
+  echo "fiat version (${FIAT_VERSION_STR})$(append_git ${FIAT_GIT_SHA1})"
+  echo ""
+  echo "Build:"
+  echo "  build type      : Release"
+  echo "  timestamp       : "
+  echo "  op. system      : Windows-10.0.26200 (windows.64)"
+  echo "  processor       : AMD64"
+  echo "  c compiler      : GNU 15.1.0"
+  echo "    flags         :  -pipe -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable -Wno-gnu-zero-variadic-macro-arguments -Wno-deprecated-declarations -O3 -DNDEBUG"
+  echo "  fortran compiler: GNU 15.1.0"
+  echo "    flags         :  -O3 -DNDEBUG -funroll-all-loops -finline-functions"
+  echo ""
+  echo "Features:"
+  echo "  MPI             : 0"
+  echo "  OMP             : 1"
+  echo "  FCKIT           : 0"
+  echo ""
+  echo "Dependencies: "
+  if [[ 0 -eq "1" ]]; then
+  echo "  fckit version ()$(append_git )"
+  fi 
+}
+
+gitsha1()
+{
+  echo "${FIAT_GIT_SHA1}"
+}
+
+
+#################################################################
+# Parse command-line
+#################################################################
+
+if test $# -eq 0; then
+    usage 1
+fi
+
+while test $# -gt 0; do
+
+    # Split --option=value in $opt="--option" and $val="value"
+
+    opt=""
+    val=""
+
+    case "$1" in
+    --*=*)
+      opt=`echo "$1" | sed 's/=.*//'`
+      val=`echo "$1" | sed 's/--[_a-zA-Z0-9]*=//'`
+      ;;
+    --*)
+      opt=$1
+      ;;
+    *)
+      break
+      ;;
+    esac
+
+    # Parse options
+    case "$opt" in
+      --version)
+        version
+        ;;
+      --git)
+        gitsha1
+          ;;
+      --info)
+        info
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        echo "unknown option: $opt"
+        usage 1
+        ;;
+    esac
+    shift
+done

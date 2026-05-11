@@ -1,0 +1,12 @@
+source: F:\openifs-main
+openifs_version: 48.1.1
+revision: local snapshot; source tree is not a git repository
+copied: 2026-05-09
+copied_by: Qianye Su
+
+copied_directories:
+- ifs-source\arpifs\fullpos
+- ifs-source\arpifs\interpol
+- ifs-source\arpifs\module
+- ifs-source\trans
+- ifs-source\contrib

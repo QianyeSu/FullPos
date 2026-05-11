@@ -1,0 +1,6 @@
+option(
+  'fullpos_native_prefix',
+  type: 'string',
+  value: '',
+  description: 'Prefix containing FIAT/ECTRANS include, lib, and runtime directories.',
+)
