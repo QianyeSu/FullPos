@@ -7,6 +7,20 @@ The interpolation backend is the native OpenIFS/ECTRANS/FULLPOS path. The
 package does not silently fall back to Skyborn or another spectral
 implementation.
 
+## v0.1.0 Boundary
+
+v0.1.0 covers native spectral `regrid`, `fit`, `synthesis`, and filtering
+paths, plus the selected native vertical pressure and APACHE-related routes
+that are already wired in this tree. It is not the complete FULLPOS `POS`
+model-level branch, and it does not include the full reduced-grid horizontal
+workflow.
+
+Install into the active environment with the project’s normal package
+installation flow, then validate with `pytest tests/test_diagnostics.py` and a
+quick `fullpos.capabilities()` check. The diagnostics test suite currently
+includes a native smoke check, so backend availability must be working for the
+runtime report to pass.
+
 ## Spectral regridding
 
 ```python
