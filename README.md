@@ -198,6 +198,32 @@ and product metadata. It also means the template must already match the desired
 output layout; `to_grib()` does not convert an `O320` template into `O480`
 metadata and does not infer complete GRIB messages from xarray metadata.
 
+By default, `to_grib()` keeps the template `packingType`. Pass
+`packing_type="ccsds"` to request GRIB2 CCSDS/AEC packing, or
+`packing_type="simple"` for simple packing. `bits_per_value=` can be used when
+you need an explicit ecCodes `bitsPerValue`. CCSDS requires an ecCodes build
+with libaec support.
+
+Common GRIB metadata can be overridden when needed:
+
+```python
+to_grib(
+    out,
+    "t_o480_20250102.grib2",
+    template="template_o480_t.grib2",
+    centre="ecmf",
+    generating_process_identifier=255,
+    data_date=20250102,
+    data_time=600,
+    step_type="instant",
+    forecast_time=0,
+)
+```
+
+The output edition follows the template by default. Use a GRIB2 template for
+normal new output; `edition=2` is available but template-based GRIB2 output is
+safer than converting GRIB1 metadata at write time.
+
 Install the optional GRIB dependencies with `pip install -e .[grib]
 --no-build-isolation`.
 

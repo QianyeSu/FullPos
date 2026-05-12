@@ -22,6 +22,7 @@ class _FakeEccodes:
         module.codes_grib_new_from_file = self.codes_grib_new_from_file
         module.codes_get = self.codes_get
         module.codes_clone = self.codes_clone
+        module.codes_set = self.codes_set
         module.codes_set_values = self.codes_set_values
         module.codes_write = self.codes_write
         module.codes_release = self.codes_release
@@ -52,6 +53,9 @@ class _FakeEccodes:
             "clone": True,
         }
 
+    def codes_set(self, gid, key, value):
+        gid["keys"][key] = value
+
     def codes_set_values(self, gid, values):
         gid["values"] = np.asarray(values).copy()
 
@@ -59,6 +63,9 @@ class _FakeEccodes:
         self.writes.append(
             {
                 "shortName": gid["keys"]["shortName"],
+                "packingType": gid["keys"].get("packingType"),
+                "bitsPerValue": gid["keys"].get("bitsPerValue"),
+                "keys": dict(gid["keys"]),
                 "source_index": gid["source_index"],
                 "values": gid["values"].copy(),
             }
@@ -181,6 +188,191 @@ def test_to_grib_append_mode_preserves_existing_bytes(tmp_path, monkeypatch) -> 
     to_grib(field, output, template=template, append=True)
 
     assert output.read_bytes() == b"OLDGRIB"
+
+
+def test_to_grib_can_override_packing_type_and_bits_per_value(
+    tmp_path, monkeypatch
+) -> None:
+    fake = _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2, "packingType": "grid_simple"}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    to_grib(
+        field,
+        output,
+        template=template,
+        packing_type="ccsds",
+        bits_per_value=16,
+    )
+
+    assert fake.writes[0]["packingType"] == "grid_ccsds"
+    assert fake.writes[0]["bitsPerValue"] == 16
+
+
+def test_to_grib_rejects_unknown_packing_alias(tmp_path, monkeypatch) -> None:
+    _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    with pytest.raises(ValueError, match="packing_type"):
+        to_grib(field, output, template=template, packing_type="unknown")
+
+
+def test_to_grib_can_override_common_grib_metadata(tmp_path, monkeypatch) -> None:
+    fake = _install_fake_eccodes(
+        monkeypatch,
+        [
+            {
+                "shortName": "t",
+                "numberOfPoints": 2,
+                "edition": 2,
+                "centre": "ecmf",
+            }
+        ],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    to_grib(
+        field,
+        output,
+        template=template,
+        edition=2,
+        centre="kwbc",
+        sub_centre=1,
+        generating_process_identifier=255,
+        data_date="20250102",
+        data_time="0600",
+        step_type="instant",
+        forecast_time=6,
+        type_of_level="isobaricInhPa",
+        level=500,
+        key_overrides={"centre": "ecmf", "localDefinitionNumber": 1},
+    )
+
+    keys = fake.writes[0]["keys"]
+    assert keys["edition"] == 2
+    assert keys["centre"] == "ecmf"
+    assert keys["subCentre"] == 1
+    assert keys["generatingProcessIdentifier"] == 255
+    assert keys["dataDate"] == 20250102
+    assert keys["dataTime"] == 600
+    assert keys["stepType"] == "instant"
+    assert keys["forecastTime"] == 6
+    assert keys["typeOfLevel"] == "isobaricInhPa"
+    assert keys["level"] == 500
+    assert keys["localDefinitionNumber"] == 1
+
+
+def test_to_grib_rejects_conflicting_parameter_identity(tmp_path, monkeypatch) -> None:
+    _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    with pytest.raises(ValueError, match="param_id and short_name"):
+        to_grib(field, output, template=template, param_id=130, short_name="t")
+
+
+def test_to_grib_uses_short_name_override_for_template_matching(
+    tmp_path, monkeypatch
+) -> None:
+    fake = _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="temperature")
+
+    to_grib(field, output, template=template, short_name="t")
+
+    assert fake.writes[0]["keys"]["shortName"] == "t"
+
+
+def test_to_grib_uses_param_id_override_for_template_matching(tmp_path, monkeypatch) -> None:
+    fake = _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "paramId": 130, "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="temperature")
+
+    to_grib(field, output, template=template, param_id=130)
+
+    assert fake.writes[0]["keys"]["shortName"] == "t"
+    assert fake.writes[0]["keys"]["paramId"] == 130
+
+
+def test_to_grib_rejects_short_name_override_for_multivariable_dataset(
+    tmp_path, monkeypatch
+) -> None:
+    _install_fake_eccodes(
+        monkeypatch,
+        [
+            {"shortName": "t", "numberOfPoints": 2},
+            {"shortName": "u", "numberOfPoints": 2},
+        ],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    dataset = xr.Dataset(
+        {
+            "temperature": (("values",), np.array([1.0, 2.0])),
+            "wind": (("values",), np.array([3.0, 4.0])),
+        }
+    )
+
+    with pytest.raises(ValueError, match="one selected Dataset variable"):
+        to_grib(dataset, output, template=template, short_name="t")
+
+
+def test_to_grib_rejects_conflicting_step_overrides(tmp_path, monkeypatch) -> None:
+    _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    with pytest.raises(ValueError, match="step_range and forecast_time"):
+        to_grib(field, output, template=template, step_range="0-6", forecast_time=6)
+
+
+def test_to_grib_rejects_invalid_edition(tmp_path, monkeypatch) -> None:
+    _install_fake_eccodes(
+        monkeypatch,
+        [{"shortName": "t", "numberOfPoints": 2}],
+    )
+    template = tmp_path / "template.grib2"
+    output = tmp_path / "out.grib2"
+    template.write_bytes(b"TEMPLATE")
+    field = xr.DataArray(np.array([1.0, 2.0]), dims=("values",), name="t")
+
+    with pytest.raises(ValueError, match="edition"):
+        to_grib(field, output, template=template, edition=3)
 
 
 def test_to_grib_requires_dataset_variables_to_exist(tmp_path, monkeypatch) -> None:
