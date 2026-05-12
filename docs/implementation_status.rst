@@ -149,8 +149,10 @@ Not complete
 * Surface-field special FULLPOS processing.
 * Stretched-geometry filtering.
 * Post-processing level-specific filtering.
-* Wheel bundling of external native runtimes such as OpenBLAS and Fortran
-  runtime libraries.
+* Fully proven release publishing on all wheel targets. The wheel build
+  workflow now prepares a native FIAT/ECTRANS prefix and bundles those shared
+  libraries, but the repaired wheels still need to be validated on GitHub
+  Actions before a public release is cut.
 
 Current Grid Handling
 ---------------------

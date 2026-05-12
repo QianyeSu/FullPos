@@ -237,6 +237,12 @@ python -m pip install -e . --no-build-isolation --no-deps --config-settings=setu
 For runtime diagnostics or local testing, `FULLPOS_NATIVE_PREFIX` can override
 the configured prefix.
 
+Wheel builds install the FIAT/ECTRANS shared libraries from the selected prefix
+into `fullpos/_native` by default. This keeps installed wheels from depending on
+the source-tree `extern/fullpos/local` path. The Meson option
+`-Dfullpos_bundle_native_runtime=false` disables that copy for local external
+dependency builds.
+
 ## Native libraries
 
 On Windows, `.dll` files are dynamic libraries. The
@@ -248,6 +254,8 @@ runtime DLLs such as OpenBLAS and gfortran.
 On Linux, the equivalent native libraries normally use `.so`. On macOS, they
 normally use `.dylib`.
 
-The current development mode is external dependency mode: FullPos checks that
-these runtime libraries are discoverable, but does not bundle OpenBLAS or the
-Fortran runtime into the wheel yet.
+For wheel builds, FIAT/ECTRANS are bundled under `fullpos/_native`, while
+platform repair tools (`auditwheel`, `delocate`, `delvewheel`) are expected to
+vendor external runtime dependencies such as OpenBLAS and gfortran. Source-tree
+editable installs can still use external dependency mode through
+`FULLPOS_NATIVE_PREFIX` and the current shell `PATH`/loader search path.

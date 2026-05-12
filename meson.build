@@ -6,6 +6,7 @@ project(
 )
 
 py_mod = import('python')
+fs = import('fs')
 py = py_mod.find_installation(pure: false)
 numpy_inc = run_command(
   py,
@@ -44,6 +45,41 @@ if host_machine.system() == 'windows'
   ectrans_link_args += ['-lws2_32']
 endif
 
+if host_machine.system() == 'windows'
+  native_runtime_source_dir = fullpos_native_prefix / 'bin'
+  native_runtime_install_dir = py.get_install_dir() / 'fullpos' / '_native' / 'bin'
+  native_install_rpath = ''
+  native_runtime_libraries = [
+    'libtransi_dp.dll',
+    'libtrans_dp.dll',
+    'libfiat.dll',
+    'libparkind_dp.dll',
+    'libparkind_sp.dll',
+  ]
+elif host_machine.system() == 'darwin'
+  native_runtime_source_dir = fullpos_native_prefix / 'lib'
+  native_runtime_install_dir = py.get_install_dir() / 'fullpos' / '_native' / 'lib'
+  native_install_rpath = '@loader_path/_native/lib'
+  native_runtime_libraries = [
+    'libtransi_dp.dylib',
+    'libtrans_dp.dylib',
+    'libfiat.dylib',
+    'libparkind_dp.dylib',
+    'libparkind_sp.dylib',
+  ]
+else
+  native_runtime_source_dir = fullpos_native_prefix / 'lib'
+  native_runtime_install_dir = py.get_install_dir() / 'fullpos' / '_native' / 'lib'
+  native_install_rpath = '$ORIGIN/_native/lib'
+  native_runtime_libraries = [
+    'libtransi_dp.so',
+    'libtrans_dp.so',
+    'libfiat.so',
+    'libparkind_dp.so',
+    'libparkind_sp.so',
+  ]
+endif
+
 fullpos_fortran_args = [
   '-I' + fullpos_native_prefix / 'module' / 'parkind_dp',
   '-I' + fullpos_native_prefix / 'module' / 'fiat',
@@ -67,7 +103,8 @@ py.extension_module(
   c_args: ectrans_c_args,
   fortran_args: fullpos_fortran_args,
   link_args: ectrans_link_args,
-  install_rpath: ectrans_libdir,
+  build_rpath: ectrans_libdir,
+  install_rpath: native_install_rpath,
   install_dir: py.get_install_dir() / 'fullpos',
   install: true,
 )
@@ -107,10 +144,10 @@ py.extension_module(
   include_directories: include_directories(
     numpy_inc,
     'src/fullpos',
-    'extern/fullpos/local/module/parkind_dp',
     'extern/fullpos/upstream/ifsaux/include',
-    'extern/fullpos/local/include/fiat',
   ),
+  fortran_args: fullpos_fortran_args,
+  install_rpath: native_install_rpath,
   install_dir: py.get_install_dir() / 'fullpos',
   install: true,
 )
@@ -188,3 +225,12 @@ py.install_sources(
   ],
   subdir: 'fullpos/interpolation',
 )
+
+if get_option('fullpos_bundle_native_runtime')
+  foreach name : native_runtime_libraries
+    candidate = native_runtime_source_dir / name
+    if fs.exists(candidate)
+      install_data(candidate, install_dir: native_runtime_install_dir)
+    endif
+  endforeach
+endif

@@ -32,10 +32,21 @@ def native_runtime_dir() -> Path:
 
 
 def native_prefix() -> Path:
-    """Return configured or bundled native ECTRANS/FIAT installation prefix."""
+    """Return the active native ECTRANS/FIAT runtime prefix.
+
+    Resolution order is:
+
+    1. ``FULLPOS_NATIVE_PREFIX`` for explicit local overrides.
+    2. The wheel-bundled ``fullpos/_native`` prefix when present.
+    3. The prefix recorded by Meson at build time.
+    4. The source-tree development prefix.
+    """
     override = os.environ.get("FULLPOS_NATIVE_PREFIX")
     if override:
         return Path(override)
+    bundled = _bundled_native_prefix()
+    if bundled is not None:
+        return bundled
     configured = _configured_native_prefix()
     if configured:
         return configured
@@ -45,11 +56,7 @@ def native_prefix() -> Path:
 
 def native_library_names() -> tuple[str, ...]:
     """Return native library filenames required by the package runtime."""
-    if sys.platform == "win32":
-        return tuple(f"lib{name}.dll" for name in _NATIVE_LIB_STEMS)
-    if sys.platform == "darwin":
-        return tuple(f"lib{name}.dylib" for name in _NATIVE_LIB_STEMS)
-    return tuple(f"lib{name}.so" for name in _NATIVE_LIB_STEMS)
+    return native_library_names_for_platform()
 
 
 def native_library_status() -> dict[str, bool]:
@@ -111,6 +118,16 @@ def _configured_native_prefix() -> Path | None:
     return Path(_normalize_configured_path(NATIVE_PREFIX))
 
 
+def _bundled_native_prefix() -> Path | None:
+    prefix = Path(__file__).resolve().parent / "_native"
+    directory = prefix / ("bin" if sys.platform == "win32" else "lib")
+    if not directory.exists():
+        return None
+    if any((directory / name).exists() for name in native_library_names_for_platform()):
+        return prefix
+    return None
+
+
 def _normalize_configured_path(path: str) -> str:
     # Meson-python currently writes Windows paths into a generated Python string.
     # If backslashes were not escaped, sequences such as \f become control chars.
@@ -118,9 +135,10 @@ def _normalize_configured_path(path: str) -> str:
 
 
 def _find_runtime_library(name: str) -> str | None:
-    local = native_runtime_dir() / name
-    if local.exists():
-        return str(local)
+    for directory in _runtime_search_dirs():
+        candidate = directory / name
+        if candidate.exists():
+            return str(candidate)
     found = shutil.which(name)
     if found is not None:
         return found
@@ -136,3 +154,32 @@ def _path_entries() -> list[Path]:
     if sys.platform == "win32":
         entries.append(Path(sys.prefix) / "Library" / "bin")
     return entries
+
+
+def _runtime_search_dirs() -> list[Path]:
+    package_dir = Path(__file__).resolve().parent
+    site_dir = package_dir.parent
+    candidates = [
+        native_runtime_dir(),
+        package_dir / ".libs",
+        package_dir / ".dylibs",
+        site_dir / "fullpos.libs",
+        site_dir / "fullpos.dylibs",
+    ]
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve() if candidate.exists() else candidate
+        if resolved not in seen:
+            seen.add(resolved)
+            out.append(candidate)
+    return out
+
+
+def native_library_names_for_platform() -> tuple[str, ...]:
+    """Return native library filenames for the current platform without path lookup."""
+    if sys.platform == "win32":
+        return tuple(f"lib{name}.dll" for name in _NATIVE_LIB_STEMS)
+    if sys.platform == "darwin":
+        return tuple(f"lib{name}.dylib" for name in _NATIVE_LIB_STEMS)
+    return tuple(f"lib{name}.so" for name in _NATIVE_LIB_STEMS)

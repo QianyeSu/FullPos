@@ -4,3 +4,10 @@ option(
   value: '',
   description: 'Prefix containing FIAT/ECTRANS include, lib, and runtime directories.',
 )
+
+option(
+  'fullpos_bundle_native_runtime',
+  type: 'boolean',
+  value: true,
+  description: 'Install FIAT/ECTRANS shared runtime libraries into the fullpos wheel.',
+)

@@ -1,0 +1,207 @@
+name: Build wheels
+
+on:
+  push:
+    branches: [main, dev]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build_wheels:
+    name: ${{ matrix.python }}-${{ matrix.buildplat[1] }}
+    runs-on: ${{ matrix.buildplat[0] }}
+    strategy:
+      fail-fast: false
+      matrix:
+        buildplat:
+          - [ubuntu-latest, manylinux_x86_64]
+          - [ubuntu-latest, manylinux2014_x86_64]
+          - [macos-15-intel, macosx_x86_64]
+          - [macos-14, macosx_arm64]
+          - [windows-2022, win_amd64]
+        python: ["cp39", "cp310", "cp311", "cp312", "cp313"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup macOS toolchain
+        if: startsWith(matrix.buildplat[0], 'macos')
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          brew list gcc >/dev/null 2>&1 || brew install gcc
+          brew list openblas >/dev/null 2>&1 || brew install openblas
+          brew list cmake >/dev/null 2>&1 || brew install cmake
+          brew list ninja >/dev/null 2>&1 || brew install ninja
+          python3 -m pip install --upgrade delocate
+
+          GCC_PREFIX="$(brew --prefix gcc)"
+          GCC_BIN_DIR="${GCC_PREFIX}/bin"
+          C_BIN="$(compgen -G "${GCC_BIN_DIR}/gcc-[0-9]*" | sort -V | tail -1)"
+          CXX_BIN="$(compgen -G "${GCC_BIN_DIR}/g++-[0-9]*" | sort -V | tail -1)"
+          F_BIN="$(compgen -G "${GCC_BIN_DIR}/gfortran-[0-9]*" | sort -V | tail -1)"
+
+          test -n "${C_BIN}"
+          test -n "${CXX_BIN}"
+          test -n "${F_BIN}"
+
+          echo "${GCC_BIN_DIR}" >> "$GITHUB_PATH"
+          echo "MACOS_CC=${C_BIN}" >> "$GITHUB_ENV"
+          echo "MACOS_CXX=${CXX_BIN}" >> "$GITHUB_ENV"
+          echo "MACOS_FC=${F_BIN}" >> "$GITHUB_ENV"
+          echo "OPENBLAS_PREFIX=$(brew --prefix openblas)" >> "$GITHUB_ENV"
+
+      - name: Setup Windows MSYS2
+        if: matrix.buildplat[1] == 'win_amd64'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc-fortran
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-openblas
+            mingw-w64-x86_64-pkgconf
+
+      - name: Setup Windows compiler paths
+        if: matrix.buildplat[1] == 'win_amd64'
+        shell: pwsh
+        run: |
+          function Resolve-MsysTool([string]$name) {
+            $candidates = @(
+              (Join-Path $env:RUNNER_TEMP "msys64\mingw64\bin\$name.exe"),
+              "D:\a\_temp\msys64\mingw64\bin\$name.exe",
+              "C:\msys64\mingw64\bin\$name.exe"
+            )
+            foreach ($candidate in $candidates) {
+              if (Test-Path $candidate) {
+                return (Resolve-Path $candidate).Path
+              }
+            }
+            $command = Get-Command "$name.exe" -ErrorAction SilentlyContinue |
+              Where-Object { $_.Source -like '*mingw64\bin\*' } |
+              Select-Object -First 1
+            if ($command) {
+              return $command.Source
+            }
+            throw "Could not resolve MSYS2 tool: $name.exe"
+          }
+
+          $gcc = Resolve-MsysTool "gcc"
+          $gxx = Resolve-MsysTool "g++"
+          $gfortran = Resolve-MsysTool "gfortran"
+          $pkgConfig = Resolve-MsysTool "pkg-config"
+          $mingwBin = Split-Path $gcc -Parent
+          $mingwPrefix = Split-Path $mingwBin -Parent
+
+          $mingwBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "MSYS2_BIN=$($mingwBin -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_PREFIX=$($mingwPrefix -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_CC=$($gcc -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_CXX=$($gxx -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_FC=$($gfortran -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MSYS2_PKG_CONFIG=$($pkgConfig -replace '\\','/')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          python -m pip install --upgrade delvewheel
+
+      - name: Build wheels (Linux)
+        if: startsWith(matrix.buildplat[1], 'manylinux')
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.buildplat[1] == 'manylinux2014_x86_64' && 'manylinux_x86_64' || matrix.buildplat[1] }}
+          CIBW_MANYLINUX_X86_64_IMAGE: ${{ matrix.buildplat[1] == 'manylinux2014_x86_64' && 'manylinux2014' || 'manylinux_2_28' }}
+          CIBW_SKIP: "*-musllinux* *-win32"
+          CIBW_BEFORE_BUILD_LINUX: >
+            (dnf install -y gcc-gfortran cmake ninja-build openblas-devel git ||
+            yum install -y gcc-gfortran cmake ninja-build openblas-devel git) &&
+            python -m pip install meson ninja cmake &&
+            python {project}/tools/build_native_prefix.py --fetch-ecbuild --clean
+          CIBW_ENVIRONMENT_LINUX: FC=gfortran F77=gfortran F90=gfortran CC=gcc CXX=g++
+          CIBW_CONFIG_SETTINGS: setup-args=-Dfullpos_bundle_native_runtime=true
+          CIBW_TEST_COMMAND: python -c "from fullpos import doctor; report = doctor(); assert report['ok'], report; print('FullPos native doctor PASS')"
+          CIBW_BUILD_VERBOSITY: 1
+
+      - name: Build wheels (macOS)
+        if: startsWith(matrix.buildplat[0], 'macos')
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.buildplat[1] }}
+          CIBW_SKIP: "*-musllinux* *-win32"
+          CIBW_BEFORE_BUILD_MACOS: >
+            python -m pip install meson ninja cmake &&
+            python {project}/tools/build_native_prefix.py --fetch-ecbuild --clean
+          CIBW_ENVIRONMENT_MACOS: FC=${{ env.MACOS_FC }} F77=${{ env.MACOS_FC }} F90=${{ env.MACOS_FC }} CC=${{ env.MACOS_CC }} CXX=${{ env.MACOS_CXX }} CMAKE_PREFIX_PATH=${{ env.OPENBLAS_PREFIX }}
+          CIBW_CONFIG_SETTINGS: setup-args=-Dfullpos_bundle_native_runtime=true
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}
+          CIBW_TEST_COMMAND: python -c "from fullpos import doctor; report = doctor(); assert report['ok'], report; print('FullPos native doctor PASS')"
+          CIBW_BUILD_VERBOSITY: 1
+
+      - name: Build wheels (Windows)
+        if: matrix.buildplat[1] == 'win_amd64'
+        uses: pypa/cibuildwheel@v3.4.1
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: ${{ matrix.python }}-${{ matrix.buildplat[1] }}
+          CIBW_SKIP: "*-win32 *-musllinux*"
+          CIBW_BEFORE_BUILD_WINDOWS: >
+            python -m pip install meson ninja cmake &&
+            python {project}\tools\build_native_prefix.py --fetch-ecbuild --clean
+          CIBW_ENVIRONMENT_WINDOWS: PATH=${{ env.MSYS2_BIN }};$PATH CC=${{ env.MSYS2_CC }} CXX=${{ env.MSYS2_CXX }} FC=${{ env.MSYS2_FC }} F77=${{ env.MSYS2_FC }} F90=${{ env.MSYS2_FC }} PKG_CONFIG=${{ env.MSYS2_PKG_CONFIG }} CMAKE_PREFIX_PATH=${{ env.MSYS2_PREFIX }}
+          CIBW_CONFIG_SETTINGS: setup-args=-Dfullpos_bundle_native_runtime=true
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: delvewheel repair --add-path "${{ env.MSYS2_BIN }}" -w {dest_dir} {wheel}
+          CIBW_TEST_COMMAND: python -c "from fullpos import doctor; report = doctor(); assert report['ok'], report; print('FullPos native doctor PASS')"
+          CIBW_BUILD_VERBOSITY: 1
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.python }}-${{ matrix.buildplat[1] }}
+          path: wheelhouse/*.whl
+
+  build_sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install sdist compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gfortran
+
+      - name: Build sdist
+        run: |
+          export CC=gcc
+          export FC=gfortran
+          export F77=gfortran
+          export F90=gfortran
+          python -m pip install --upgrade pip build
+          python -m build --sdist
+
+      - name: Upload sdist
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz

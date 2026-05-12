@@ -14,6 +14,8 @@ coverage.xml
 build/
 build-ectrans/
 build-fiat/
+.ci/
+.native-build/
 dist/
 *.egg-info/
 *.egg
@@ -63,7 +65,4 @@ validation_roundtrip_*.json
 
 *.log
 .ipynb_checkpoints/
-
-# Local planning notes should stay out of package commits.
 IMPLEMENTATION_PLAN.md
-实现计划.md
