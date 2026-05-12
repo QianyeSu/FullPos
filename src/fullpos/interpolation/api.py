@@ -187,6 +187,134 @@ def regrid_values(
     return regridder.regrid_values(values, axis=axis)
 
 
+def spectral_interpolate(
+    obj,
+    *,
+    source_grid=None,
+    target_grid=None,
+    variables=None,
+    missing_value=None,
+    ntrunc=None,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    missing_policy="error",
+    keep_attrs=True,
+    skip_non_horizontal=True,
+):
+    """Interpolate xarray data between Gaussian grids with native ECTRANS.
+
+    This is the explicit spectral-interpolation spelling for the Gaussian
+    ``O*``/``F*``/``N*`` path. It is equivalent to ``regrid(...,
+    method="spectral")`` for Gaussian targets, but rejects regular
+    latitude/longitude targets such as ``"LL1.0"`` because those are handled by
+    native FULLPOS horizontal interpolation through ``regrid``.
+    """
+    if target_grid is None:
+        raise ValueError("target_grid is required")
+    if _parse_regular_latlon_target(target_grid) is not None:
+        raise ValueError(
+            "spectral_interpolate only supports Gaussian O*/F*/N* targets; "
+            "use regrid(...) for regular latitude/longitude LL targets"
+        )
+    return regrid(
+        obj,
+        source_grid=source_grid,
+        target_grid=target_grid,
+        method="spectral",
+        variables=variables,
+        missing_value=missing_value,
+        ntrunc=ntrunc,
+        chunk_size=chunk_size,
+        missing_policy=missing_policy,
+        keep_attrs=keep_attrs,
+        skip_non_horizontal=skip_non_horizontal,
+    )
+
+
+def spectral_regrid(
+    obj,
+    *,
+    source_grid=None,
+    target_grid=None,
+    variables=None,
+    missing_value=None,
+    ntrunc=None,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    missing_policy="error",
+    keep_attrs=True,
+    skip_non_horizontal=True,
+):
+    """Regrid xarray data between Gaussian grids with native ECTRANS/FIAT.
+
+    This is a semantic alias of ``spectral_interpolate``. It is kept separate
+    from ``regrid`` so users can explicitly request the Gaussian spectral path.
+    """
+    return spectral_interpolate(
+        obj,
+        source_grid=source_grid,
+        target_grid=target_grid,
+        variables=variables,
+        missing_value=missing_value,
+        ntrunc=ntrunc,
+        chunk_size=chunk_size,
+        missing_policy=missing_policy,
+        keep_attrs=keep_attrs,
+        skip_non_horizontal=skip_non_horizontal,
+    )
+
+
+def spectral_interpolate_values(
+    values,
+    *,
+    source_grid,
+    target_grid,
+    ntrunc=None,
+    axis=-1,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    missing_policy="error",
+    missing_value=None,
+):
+    """Interpolate NumPy-like values between Gaussian grids with ECTRANS."""
+    if _parse_regular_latlon_target(target_grid) is not None:
+        raise ValueError(
+            "spectral_interpolate_values only supports Gaussian O*/F*/N* targets"
+        )
+    return regrid_values(
+        values,
+        source_grid=source_grid,
+        target_grid=target_grid,
+        ntrunc=ntrunc,
+        axis=axis,
+        chunk_size=chunk_size,
+        missing_policy=missing_policy,
+        method="spectral",
+        missing_value=missing_value,
+    )
+
+
+def spectral_regrid_values(
+    values,
+    *,
+    source_grid,
+    target_grid,
+    ntrunc=None,
+    axis=-1,
+    chunk_size=DEFAULT_CHUNK_SIZE,
+    missing_policy="error",
+    missing_value=None,
+):
+    """Regrid NumPy-like values between Gaussian grids with ECTRANS/FIAT."""
+    return spectral_interpolate_values(
+        values,
+        source_grid=source_grid,
+        target_grid=target_grid,
+        ntrunc=ntrunc,
+        axis=axis,
+        chunk_size=chunk_size,
+        missing_policy=missing_policy,
+        missing_value=missing_value,
+    )
+
+
 def _regrid_regular_latlon(
     obj,
     *,

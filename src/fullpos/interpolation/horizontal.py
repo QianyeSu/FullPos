@@ -31,6 +31,27 @@ def horizontal_interpolate(
     (FPINT4, FPINT12, FPNEAR, FPAVG). It accepts the planned xarray-style
     ``chunks`` argument, for example ``{"time": 1, "hybrid": 10}``, but no
     Python fallback is exposed here.
+
+    Supported source layouts are:
+
+    * xarray regular-row fields with ``latitude`` and ``longitude`` dimensions;
+    * packed reduced Gaussian fields with one packed horizontal dimension.
+
+    Packed reduced Gaussian input needs row-length metadata so the one
+    dimensional field can be split into Gaussian latitude rows. Provide this as
+    ``source_pl=...``, pass a reduced grid such as ``source_grid="O96"``, or
+    use an xarray object whose attributes contain ``GRIB_pl``/``pl``. For raw
+    NumPy input, packed reduced Gaussian fields are the only supported layout;
+    regular-row NumPy arrays should be wrapped as xarray objects with latitude
+    and longitude coordinates.
+
+    The packed reduced path is an unmasked native interpolation path for finite
+    fields such as model-level ``t/u/v/q`` or surface fields without GRIB
+    bitmaps. It is not the complete FULLPOS land/sea-mask workflow for SST,
+    sea ice, or other bitmap/missing-value surface fields. Passing
+    ``source_mask`` currently raises ``FullposNotImplementedError`` because
+    native mask-aware horizontal interpolation has not been wired into the
+    public API yet.
     """
     _validate_horizontal_request(
         values,
@@ -88,22 +109,38 @@ def horizontal_interpolate(
 
 
 def nearest_interpolate(values, **kwargs) -> np.ndarray:
-    """Interpolate using nearest-neighbour selection."""
+    """Interpolate using nearest-neighbour selection.
+
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
+    requirements and mask-aware interpolation limitations.
+    """
     return horizontal_interpolate(values, method="nearest", **kwargs)
 
 
 def bilinear_interpolate(values, **kwargs) -> np.ndarray:
-    """Interpolate using 4-point bilinear weights."""
+    """Interpolate using 4-point bilinear weights.
+
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
+    requirements and mask-aware interpolation limitations.
+    """
     return horizontal_interpolate(values, method="bilinear", **kwargs)
 
 
 def quadratic12_interpolate(values, **kwargs) -> np.ndarray:
-    """Interpolate using a 12-point high-order regular-grid stencil."""
+    """Interpolate using a 12-point high-order regular-grid stencil.
+
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
+    requirements and mask-aware interpolation limitations.
+    """
     return horizontal_interpolate(values, method="quadratic12", **kwargs)
 
 
 def average_interpolate(values, **kwargs) -> np.ndarray:
-    """Interpolate using an average over a square source-grid halo."""
+    """Interpolate using an average over a square source-grid halo.
+
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
+    requirements and mask-aware interpolation limitations.
+    """
     return horizontal_interpolate(values, method="average", **kwargs)
 
 

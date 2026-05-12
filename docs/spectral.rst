@@ -30,7 +30,7 @@ Basic xarray Usage
 .. code-block:: python
 
    import xarray as xr
-   from fullpos import regrid
+   from fullpos import spectral_regrid
 
    ds = xr.open_dataset(
        "<path-to-o320-model-level-grib>",
@@ -42,25 +42,30 @@ Basic xarray Usage
        },
    )
 
-   out = regrid(ds["t"].isel(time=0), target_grid="O480", chunk_size=64)
+   out = spectral_regrid(ds["t"].isel(time=0), target_grid="O480", chunk_size=64)
 
 When GRIB metadata contains ``GRIB_gridType``, ``GRIB_N``, and ``GRIB_pl``,
 ``source_grid`` can be inferred. Otherwise pass it explicitly:
 
 .. code-block:: python
 
-   out = regrid(ds["t"], source_grid="O320", target_grid="O480", chunk_size=16)
+   out = spectral_regrid(
+       ds["t"],
+       source_grid="O320",
+       target_grid="O480",
+       chunk_size=16,
+   )
 
 NumPy Usage
 -----------
 
-Use ``regrid_values`` when the grid is already known:
+Use ``spectral_regrid_values`` when the grid is already known:
 
 .. code-block:: python
 
-   from fullpos import regrid_values
+   from fullpos import spectral_regrid_values
 
-   result = regrid_values(
+   result = spectral_regrid_values(
        values,
        source_grid="O320",
        target_grid="O480",
@@ -71,6 +76,17 @@ Use ``regrid_values`` when the grid is already known:
 For reduced grids, ``axis`` identifies the packed horizontal dimension. For
 regular Gaussian grids, pass ``axis=(lat_axis, lon_axis)`` when the horizontal
 dimensions are not the last two axes.
+
+Compatibility
+-------------
+
+``regrid`` and ``regrid_values`` remain available for existing code. They call
+the same native ECTRANS path for Gaussian ``O*``/``F*``/``N*`` targets.
+Use ``regrid`` when you intentionally want regular latitude/longitude targets
+such as ``LL1.0`` or ``LL0.25``, because those outputs are dispatched through
+native FULLPOS horizontal interpolation rather than the pure spectral wrapper.
+``spectral_interpolate`` and ``spectral_interpolate_values`` are also available
+as readable aliases for ``spectral_regrid`` and ``spectral_regrid_values``.
 
 Missing Values
 --------------

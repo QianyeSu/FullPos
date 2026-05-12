@@ -2,7 +2,15 @@ import pytest
 import xarray as xr
 import numpy as np
 
-from fullpos import Regridder, regrid, regrid_values
+from fullpos import (
+    Regridder,
+    regrid,
+    regrid_values,
+    spectral_interpolate,
+    spectral_interpolate_values,
+    spectral_regrid,
+    spectral_regrid_values,
+)
 from fullpos.grids import gaussian_latitudes, octahedral_pl, regular_longitudes
 
 
@@ -218,6 +226,51 @@ def test_regrid_values_can_preserve_nan_propagating_backend_behavior() -> None:
     )
 
     assert np.isnan(out).any()
+
+
+def test_spectral_interpolate_supports_gaussian_targets() -> None:
+    obj = xr.DataArray(np.ones((8, 16), dtype=np.float32), dims=("latitude", "longitude"))
+
+    out = spectral_interpolate(obj, source_grid="N4", target_grid="O4")
+
+    assert out.dims == ("values",)
+    assert out.size == 208
+    np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
+
+
+def test_spectral_interpolate_rejects_regular_latlon_targets() -> None:
+    obj = xr.DataArray(np.ones((8, 16), dtype=np.float32), dims=("latitude", "longitude"))
+
+    with pytest.raises(ValueError, match="only supports Gaussian"):
+        spectral_interpolate(obj, source_grid="F4", target_grid="LL1.0")
+
+
+def test_spectral_interpolate_values_supports_gaussian_targets() -> None:
+    values = np.ones((3, 208), dtype=np.float32)
+
+    out = spectral_interpolate_values(values, source_grid="O4", target_grid="N4", chunk_size=2)
+
+    assert out.shape == (3, 8, 16)
+    np.testing.assert_allclose(out, 1.0, atol=1.0e-5)
+
+
+def test_spectral_regrid_alias_supports_gaussian_targets() -> None:
+    obj = xr.DataArray(np.ones((8, 16), dtype=np.float32), dims=("latitude", "longitude"))
+
+    out = spectral_regrid(obj, source_grid="N4", target_grid="O4")
+
+    assert out.dims == ("values",)
+    assert out.size == 208
+    np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
+
+
+def test_spectral_regrid_values_alias_supports_gaussian_targets() -> None:
+    values = np.ones((3, 208), dtype=np.float32)
+
+    out = spectral_regrid_values(values, source_grid="O4", target_grid="N4", chunk_size=2)
+
+    assert out.shape == (3, 8, 16)
+    np.testing.assert_allclose(out, 1.0, atol=1.0e-5)
 
 
 def test_masked_regrid_values_preserves_constant_with_missing_points() -> None:

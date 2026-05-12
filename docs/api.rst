@@ -17,6 +17,10 @@ Common imports:
        SpectralFilter,
        regrid,
        regrid_values,
+       spectral_interpolate,
+       spectral_interpolate_values,
+       spectral_regrid,
+       spectral_regrid_values,
        spectral_fit,
        spectral_synthesis,
        spectral_filter,
@@ -32,6 +36,11 @@ Use ``capabilities()`` to inspect the current native feature boundary from
 Python. It reports the native spectral, filtering, horizontal, and vertical
 paths that are wired today, including the reduced-Gaussian note that user-level
 horizontal interpolation should follow native spectral regridding.
+
+For the explicit native ECTRANS/FIAT spectral path, prefer
+``spectral_regrid(...)`` and ``spectral_regrid_values(...)``.
+``spectral_interpolate(...)`` remains available as a readable alias.
+``regrid(...)`` remains available as the broader compatibility entry point.
 
 ``regrid(...)`` also accepts regular latitude/longitude targets such as
 ``target_grid="LL1.0"`` and ``target_grid="LL0.25"`` for xarray inputs. Those

@@ -1,4 +1,11 @@
-from .api import regrid, regrid_values
+from .api import (
+    regrid,
+    regrid_values,
+    spectral_interpolate,
+    spectral_interpolate_values,
+    spectral_regrid,
+    spectral_regrid_values,
+)
 from .horizontal import (
     average_interpolate,
     bilinear_interpolate,
@@ -37,6 +44,9 @@ __all__ = [
     "quadratic12_interpolate",
     "regrid",
     "regrid_values",
+    "spectral_interpolate",
+    "spectral_interpolate_values",
+    "spectral_regrid",
     "spectral_regrid_batch",
     "spectral_regrid_chunks",
     "spectral_regrid_values",

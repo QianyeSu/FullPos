@@ -20,8 +20,10 @@ The documented stable path is intentionally narrow:
 Completed
 ---------
 
-* Native ECTRANS/FIAT spectral regridding through ``regrid`` and
-  ``regrid_values``.
+* Native ECTRANS/FIAT spectral regridding through ``spectral_regrid`` and
+  ``spectral_regrid_values``. ``spectral_interpolate`` remains a readable
+  alias, and ``regrid`` / ``regrid_values`` remain compatibility aliases for
+  Gaussian targets.
 * xarray ``DataArray`` and ``Dataset`` spectral regridding with metadata and
   history preservation.
 * Native regular latitude/longitude ``LL1.0`` and ``LL0.25`` output through
