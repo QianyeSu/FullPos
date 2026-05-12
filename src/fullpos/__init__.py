@@ -13,7 +13,7 @@ from typing import Any
 try:
     __version__ = version("fullpos")
 except PackageNotFoundError:  # pragma: no cover - local source tree fallback
-    __version__ = "0.1.0"
+    __version__ = "0.1.0a0"
 
 _OBJECT_EXPORTS = {
     "Regridder": ("fullpos.regridder", "Regridder"),
@@ -43,6 +43,7 @@ _OBJECT_EXPORTS = {
     "spectral_fit_values": ("fullpos.spectral", "spectral_fit_values"),
     "spectral_synthesis": ("fullpos.spectral", "spectral_synthesis"),
     "spectral_synthesis_values": ("fullpos.spectral", "spectral_synthesis_values"),
+    "to_grib": ("fullpos.grib", "to_grib"),
     "vertical_capabilities": ("fullpos.vertical", "vertical_capabilities"),
     "vertical_interpolate": ("fullpos.vertical", "vertical_interpolate"),
 }

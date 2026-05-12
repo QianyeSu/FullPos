@@ -15,7 +15,7 @@ sys.meta_path[:] = [
 project = "FullPos"
 author = "Qianye Su"
 copyright = "2026, Qianye Su"
-release = "0.1.0"
+release = "0.1.0a0"
 
 extensions = [
     "sphinx.ext.autodoc",

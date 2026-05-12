@@ -9,7 +9,7 @@ build-backend = "mesonpy"
 
 [project]
 name = "fullpos"
-version = "0.1.0"
+version = "0.1.0a0"
 description = "ECMWF/OpenIFS FULLPOS-style regridding tools for Python"
 readme = "README.md"
 authors = [{ name = "Qianye Su" }]
@@ -33,6 +33,7 @@ io = [
 ]
 grib = [
     "cfgrib",
+    "eccodes",
 ]
 dev = [
     "pytest",

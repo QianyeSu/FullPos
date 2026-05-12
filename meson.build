@@ -1,7 +1,7 @@
 project(
   'fullpos',
   ['c', 'fortran'],
-  version: '0.1.0',
+  version: '0.1.0a0',
   default_options: ['warning_level=2', 'buildtype=release', 'b_lto=false'],
 )
 
@@ -169,6 +169,7 @@ py.install_sources(
     'src/fullpos/diagnostics.py',
     'src/fullpos/errors.py',
     'src/fullpos/filtering.py',
+    'src/fullpos/grib.py',
     'src/fullpos/grids.py',
     'src/fullpos/metadata.py',
     'src/fullpos/native.py',

@@ -7,9 +7,9 @@ The interpolation backend is the native OpenIFS/ECTRANS/FULLPOS path. The
 package does not silently fall back to Skyborn or another spectral
 implementation.
 
-## v0.1.0 Boundary
+## v0.1.0a0 Preview Boundary
 
-v0.1.0 covers native spectral `regrid`, `fit`, `synthesis`, and filtering
+v0.1.0a0 previews native spectral `regrid`, `fit`, `synthesis`, and filtering
 paths, plus the selected native vertical pressure and APACHE-related routes
 that are already wired in this tree. It is not the complete FULLPOS `POS`
 model-level branch, and it does not include the full reduced-grid horizontal
