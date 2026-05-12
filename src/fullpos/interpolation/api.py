@@ -85,7 +85,7 @@ def regrid(
 
     if isinstance(obj, xr.DataArray):
         regridder = Regridder(
-            source_grid or _infer_source_grid(obj),
+            source_grid or infer_source_grid(obj),
             target_grid,
             ntrunc=ntrunc,
             chunk_size=chunk_size,
@@ -437,11 +437,6 @@ def _regular_ll_history(*, source_grid, target_name: str, method: str) -> str:
         f"fullpos regrid source_grid={_grid_name(source_grid)} "
         f"target_grid={target_name} method={method}"
     )
-
-
-def _infer_source_grid(obj) -> str:
-    return infer_source_grid(obj)
-
 
 def _grid_name(grid) -> str:
     return getattr(grid, "name", str(grid))

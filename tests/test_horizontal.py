@@ -20,68 +20,56 @@ from fullpos.grids import gaussian_latitudes, octahedral_pl, regular_longitudes
 def test_bilinear_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
-    values = np.arange(8 * 16, dtype=np.float64).reshape(8, 16)
+    obj = xr.DataArray(
+        np.arange(8 * 16, dtype=np.float64).reshape(8, 16),
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
     target_lats, target_lons = np.meshgrid(lats[2:-2], lons, indexing="ij")
 
-    out = bilinear_interpolate(
-        values,
-        source_lats=lats,
-        source_lons=lons,
-        target_lats=target_lats,
-        target_lons=target_lons,
-    )
+    out = bilinear_interpolate(obj, target_lats=target_lats, target_lons=target_lons)
 
-    np.testing.assert_allclose(out, values[2:-2], atol=1.0e-12)
+    np.testing.assert_allclose(out.values, obj.values[2:-2], atol=1.0e-12)
 
 
 def test_quadratic12_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
-    values = np.arange(8 * 16, dtype=np.float64).reshape(8, 16)
+    obj = xr.DataArray(
+        np.arange(8 * 16, dtype=np.float64).reshape(8, 16),
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
     target_lats, target_lons = np.meshgrid(lats[2:-2], lons, indexing="ij")
 
-    out = quadratic12_interpolate(
-        values,
-        source_lats=lats,
-        source_lons=lons,
-        target_lats=target_lats,
-        target_lons=target_lons,
-    )
+    out = quadratic12_interpolate(obj, target_lats=target_lats, target_lons=target_lons)
 
-    np.testing.assert_allclose(out, values[2:-2], atol=1.0e-11)
+    np.testing.assert_allclose(out.values, obj.values[2:-2], atol=1.0e-11)
 
 
 def test_nearest_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
-    values = np.arange(8 * 16, dtype=np.float64).reshape(8, 16)
+    obj = xr.DataArray(
+        np.arange(8 * 16, dtype=np.float64).reshape(8, 16),
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
     target_lats, target_lons = np.meshgrid(lats[2:-2], lons, indexing="ij")
 
-    out = nearest_interpolate(
-        values,
-        source_lats=lats,
-        source_lons=lons,
-        target_lats=target_lats,
-        target_lons=target_lons,
-    )
+    out = nearest_interpolate(obj, target_lats=target_lats, target_lons=target_lons)
 
-    np.testing.assert_allclose(out, values[2:-2], atol=1.0e-12)
+    np.testing.assert_allclose(out.values, obj.values[2:-2], atol=1.0e-12)
 
 
 def test_average_interpolate_matches_fullpos_2x2_halo_mean_at_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
     values = np.arange(8 * 16, dtype=np.float64).reshape(8, 16)
+    obj = xr.DataArray(values, dims=("latitude", "longitude"), coords={"latitude": lats, "longitude": lons})
     target_lats, target_lons = np.meshgrid(lats[2:-2], lons, indexing="ij")
 
-    out = average_interpolate(
-        values,
-        source_lats=lats,
-        source_lons=lons,
-        target_lats=target_lats,
-        target_lons=target_lons,
-        average_radius=1,
-    )
+    out = average_interpolate(obj, target_lats=target_lats, target_lons=target_lons, average_radius=1)
 
     expected = np.empty_like(values[2:-2])
     for row in range(2, 6):
@@ -94,7 +82,7 @@ def test_average_interpolate_matches_fullpos_2x2_halo_mean_at_grid_points() -> N
                     values[row + 1, (col + 1) % values.shape[1]],
                 ]
             )
-    np.testing.assert_allclose(out, expected, atol=1.0e-12)
+    np.testing.assert_allclose(out.values, expected, atol=1.0e-12)
 
 
 @pytest.mark.parametrize("method", ["bilinear", "quadratic12"])
@@ -213,16 +201,18 @@ def test_horizontal_interpolate_dataset_skips_non_horizontal_variables() -> None
 def test_masked_horizontal_interpolation_is_still_unimplemented() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
-    values = np.ones((8, 16), dtype=np.float64)
+    obj = xr.DataArray(
+        np.ones((8, 16), dtype=np.float64),
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
 
     with pytest.raises(FullposNotImplementedError):
         horizontal_interpolate(
-            values,
-            source_lats=lats,
-            source_lons=lons,
+            obj,
             target_lats=np.array([lats[3]]),
             target_lons=np.array([lons[0]]),
-            source_mask=np.ones_like(values, dtype=bool),
+            source_mask=np.ones_like(obj.values, dtype=bool),
         )
 
 
@@ -258,13 +248,15 @@ def test_horizontal_interpolate_validates_dataset_variables() -> None:
 
 
 def test_horizontal_interpolate_rejects_backend_argument() -> None:
-    values = np.ones((8, 16))
+    obj = xr.DataArray(
+        np.ones((8, 16)),
+        dims=("latitude", "longitude"),
+        coords={"latitude": gaussian_latitudes(8), "longitude": regular_longitudes(16)},
+    )
 
     with pytest.raises(TypeError, match="unexpected keyword argument"):
         horizontal_interpolate(
-            values,
-            source_lats=gaussian_latitudes(8),
-            source_lons=regular_longitudes(16),
+            obj,
             target_lats=np.array([0.0]),
             target_lons=np.array([0.0]),
             backend="python",

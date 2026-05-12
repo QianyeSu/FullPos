@@ -68,6 +68,29 @@ def test_real_o320_temperature_to_o480_has_finite_packed_output() -> None:
     assert np.isfinite(out.values).all()
 
 
+@pytest.mark.skipif(not REAL_O320.exists(), reason="local ERA5 O320 GRIB sample not found")
+def test_real_o320_temperature_to_ll1_has_regular_latlon_output() -> None:
+    ds = xr.open_dataset(
+        REAL_O320,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "t", "typeOfLevel": "hybrid"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints", "packingType"],
+        },
+    )
+    field = ds["t"].isel(time=0, hybrid=0)
+
+    out = regrid(field, source_grid="O320", target_grid="LL1.0", chunk_size=1)
+
+    assert out.dims == ("latitude", "longitude")
+    assert out.shape == (180, 360)
+    assert out.attrs["GRIB_gridType"] == "regular_ll"
+    np.testing.assert_allclose(out["latitude"].values[[0, -1]], [89.5, -89.5])
+    np.testing.assert_allclose(out["longitude"].values[[0, -1]], [0.0, 359.0])
+    assert np.isfinite(out.values).all()
+
+
 @pytest.mark.skipif(not REAL_SURFACE_O96.exists(), reason="local ERA5 O96 surface GRIB sample not found")
 def test_real_o96_sst_bitmap_is_rejected_for_spectral_regridding() -> None:
     ds = xr.open_dataset(

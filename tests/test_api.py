@@ -3,7 +3,7 @@ import xarray as xr
 import numpy as np
 
 from fullpos import Regridder, regrid, regrid_values
-from fullpos.grids import octahedral_pl
+from fullpos.grids import gaussian_latitudes, octahedral_pl, regular_longitudes
 
 
 def test_regrid_requires_target_grid() -> None:
@@ -41,6 +41,78 @@ def test_regrid_supports_small_octahedral_to_regular() -> None:
     out = regrid(obj, source_grid="O4", target_grid="N4")
     assert out.dims == ("latitude", "longitude")
     assert out.shape == (8, 16)
+    np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
+
+
+def test_regrid_supports_regular_latlon_target() -> None:
+    obj = xr.DataArray(
+        np.ones((8, 16), dtype=np.float32),
+        dims=("latitude", "longitude"),
+        coords={
+            "latitude": gaussian_latitudes(8),
+            "longitude": regular_longitudes(16),
+        },
+        attrs={"units": "K"},
+    )
+
+    out = regrid(obj, source_grid="F4", target_grid="LL1.0")
+
+    assert out.dims == ("latitude", "longitude")
+    assert out.shape == (180, 360)
+    assert out.attrs["GRIB_gridType"] == "regular_ll"
+    assert out.attrs["GRIB_numberOfPoints"] == 180 * 360
+    assert out.attrs["GRIB_iDirectionIncrementInDegrees"] == 1.0
+    assert out.attrs["GRIB_jDirectionIncrementInDegrees"] == 1.0
+    assert "target_grid=LL1" in out.attrs["history"]
+    np.testing.assert_allclose(out["latitude"].values[[0, -1]], [89.5, -89.5])
+    np.testing.assert_allclose(out["longitude"].values[[0, -1]], [0.0, 359.0])
+    np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
+
+
+def test_regrid_dataset_regular_latlon_target_selects_variables() -> None:
+    ds = xr.Dataset(
+        data_vars={
+            "t": (("latitude", "longitude"), np.ones((8, 16), dtype=np.float32)),
+            "surface": ("time", np.arange(2, dtype=np.float32)),
+        },
+        coords={
+            "latitude": gaussian_latitudes(8),
+            "longitude": regular_longitudes(16),
+            "time": [0, 1],
+        },
+    )
+
+    out = regrid(ds, source_grid="F4", target_grid="LL2.5", variables=["t"])
+
+    assert out["t"].dims == ("latitude", "longitude")
+    assert out["t"].shape == (72, 144)
+    assert "surface" not in out
+    assert out.attrs["GRIB_gridType"] == "regular_ll"
+    assert out["t"].attrs["GRIB_gridType"] == "regular_ll"
+    np.testing.assert_allclose(out["t"].values, 1.0, atol=1.0e-5)
+
+
+def test_regrid_regular_latlon_target_accepts_named_chunks() -> None:
+    obj = xr.DataArray(
+        np.ones((2, 3, 8, 16), dtype=np.float32),
+        dims=("time", "hybrid", "latitude", "longitude"),
+        coords={
+            "time": [0, 1],
+            "hybrid": [1, 2, 3],
+            "latitude": gaussian_latitudes(8),
+            "longitude": regular_longitudes(16),
+        },
+    )
+
+    out = regrid(
+        obj,
+        source_grid="F4",
+        target_grid="LL2.5",
+        chunks={"time": 1, "hybrid": 2},
+    )
+
+    assert out.dims == ("time", "hybrid", "latitude", "longitude")
+    assert out.shape == (2, 3, 72, 144)
     np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
 
 

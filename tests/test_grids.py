@@ -12,8 +12,17 @@ def test_parse_o320() -> None:
     assert grid.is_reduced
 
 
-def test_parse_n320() -> None:
+def test_parse_f320() -> None:
+    grid = parse_grid("F320")
+    assert grid.nlat == 640
+    assert grid.work_nlon == 1280
+    assert grid.size == 819200
+    assert not grid.is_reduced
+
+
+def test_parse_n320_alias_for_regular_gaussian() -> None:
     grid = parse_grid("N320")
+    assert grid.name == "N320"
     assert grid.nlat == 640
     assert grid.work_nlon == 1280
     assert grid.size == 819200
@@ -24,7 +33,7 @@ def test_octahedral_max_row_uses_ecmwf_4n_plus_16_rule() -> None:
     assert parse_grid("O96").work_nlon == 400
     assert parse_grid("O160").work_nlon == 656
     assert parse_grid("O320").work_nlon == 1296
-    assert parse_grid("N160").work_nlon == 640
+    assert parse_grid("F160").work_nlon == 640
 
 
 def test_octahedral_pl_o320_matches_expected_edges() -> None:
@@ -52,7 +61,7 @@ def test_infer_regular_gaussian_from_grib_attrs() -> None:
         "GRIB_N": 4,
         "GRIB_numberOfPoints": 128,
     }
-    assert infer_grid_name_from_attrs(attrs) == "N4"
+    assert infer_grid_name_from_attrs(attrs) == "F4"
 
 
 def test_rejects_non_octahedral_reduced_gaussian_attrs() -> None:
