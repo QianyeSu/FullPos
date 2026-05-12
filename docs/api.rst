@@ -22,9 +22,15 @@ Common imports:
        spectral_filter,
        generic_spectral_filter,
        horizontal_interpolate,
+       capabilities,
        diagnose_potential_vorticity,
        vertical_interpolate,
    )
+
+Use ``capabilities()`` to inspect the current native feature boundary from
+Python. It reports the native spectral, filtering, horizontal, and vertical
+paths that are wired today, including the reduced-Gaussian note that user-level
+horizontal interpolation should follow native spectral regridding.
 
 Spectral Module
 ---------------

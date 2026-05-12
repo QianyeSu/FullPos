@@ -1,5 +1,5 @@
 from .api import regrid, regrid_values
-from .diagnostics import backend_info, doctor
+from .diagnostics import backend_info, capabilities, doctor
 from .filters import (
     SpectralFilter,
     filter_spectral_coefficients,
@@ -30,6 +30,7 @@ __all__ = [
     "average_interpolate",
     "backend_info",
     "bilinear_interpolate",
+    "capabilities",
     "doctor",
     "diagnose_potential_vorticity",
     "filter_spectral_coefficients",

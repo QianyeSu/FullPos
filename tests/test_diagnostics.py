@@ -1,4 +1,4 @@
-from fullpos import backend_info, doctor
+from fullpos import backend_info, capabilities, doctor
 
 
 def test_backend_info_reports_native_status() -> None:
@@ -17,6 +17,20 @@ def test_backend_info_reports_native_status() -> None:
     assert "required_native_libraries_present" in info
     assert "external_runtime_libraries" in info
     assert "external_runtime_libraries_present" in info
+
+
+def test_capabilities_reports_current_native_feature_scope() -> None:
+    report = capabilities()
+
+    assert report["backend"] == "native"
+    assert report["spectral"]["regrid"] == "native"
+    assert report["spectral"]["fit"] == "native"
+    assert report["filtering"]["spectral_filter"] == "native"
+    assert report["horizontal"]["regular_gaussian"] == "native"
+    assert report["horizontal"]["requires_spectral_regrid_before_user_level_interpolation"]
+    assert report["vertical"]["pressure"] == "native"
+    assert report["vertical"]["height_above_sea"] == "native_gpgeo_fpps"
+    assert report["runtime"]["native_module"] == "fullpos._ectrans"
 
 
 def test_doctor_runs_native_smoke_check() -> None:

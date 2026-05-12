@@ -7,6 +7,7 @@ import numpy as np
 
 from .spectral import native_backend_status
 from .regridder import Regridder
+from .vertical import vertical_capabilities
 
 
 def backend_info() -> dict:
@@ -19,6 +20,32 @@ def backend_info() -> dict:
     }
     info.update(native_backend_status())
     return info
+
+
+def capabilities() -> dict:
+    """Return a compact status summary for the current public feature set."""
+
+    info = backend_info()
+    return {
+        "backend": info["backend"],
+        "spectral": {
+            "regrid": "native",
+            "fit": "native",
+            "synthesis": "native",
+        },
+        "filtering": {
+            "spectral_filter": "native",
+            "generic_spectral_filter": "native",
+            "filter_matrix_io": "native",
+        },
+        "horizontal": {
+            "regular_gaussian": "native",
+            "reduced_gaussian": "native_special_cases",
+            "requires_spectral_regrid_before_user_level_interpolation": True,
+        },
+        "vertical": vertical_capabilities(),
+        "runtime": info,
+    }
 
 
 def doctor() -> dict:
