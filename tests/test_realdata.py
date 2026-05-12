@@ -317,6 +317,16 @@ def test_real_o96_pressure_dataset_uses_apache_lescale() -> None:
         target_surface_pressure=target_surface,
         lescale=True,
     )
+    chunked = vertical_interpolate(
+        model,
+        target="pressure",
+        levels=[30000.0, 50000.0, 85000.0],
+        variables=["t", "u", "v", "q"],
+        chunks={"time": 1, "values": 2000},
+        surface_pressure=surface,
+        target_surface_pressure=target_surface,
+        lescale=True,
+    )
 
     assert set(out.data_vars) == {"t", "u", "v", "q"}
     for name in ("t", "u", "v", "q"):
@@ -325,6 +335,10 @@ def test_real_o96_pressure_dataset_uses_apache_lescale() -> None:
         assert out[name].attrs["vertical_native_path"] == "APACHE"
         assert out[name].attrs["vertical_lescale"] == "enabled"
         assert np.isfinite(out[name].values).all()
+        metrics = pressure_metric_summary(chunked[name], out[name], level_dim="pressure")
+        assert metrics["overall"]["count"] == out[name].size
+        assert metrics["overall"]["rmse"] <= 1.0e-8
+        assert metrics["overall"]["max_abs"] <= 1.0e-8
 
 
 @pytest.mark.skipif(

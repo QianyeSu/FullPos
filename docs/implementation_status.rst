@@ -4,6 +4,16 @@ Implementation Status
 This page records the current development boundary. It should be updated when
 new native FULLPOS functionality is wired into the Python API.
 
+Current stable scope
+--------------------
+
+The documented stable path is intentionally narrow:
+
+* native spectral regridding,
+* native spectral filtering, and
+* native pressure-level vertical interpolation through the current
+  OpenIFS/FULLPOS-backed dataset paths.
+
 Completed
 ---------
 
@@ -115,6 +125,9 @@ Partial
   ``GPHPRE``/``GPGEO``/``FPPS`` pressure lookups plus the native PP-chain
   interpolation kernels. They are not yet the complete ``APACHE`` output-field
   workflow for all derived fields.
+* Reduced Gaussian fields still need spectral regridding before the regular-row
+  user-level horizontal interpolation path is used. The packed reduced-Gaussian
+  native routes documented above remain the narrower special cases.
 * Development-only Skyborn compiled reference checks remain available for
   comparison, including correct ``p0=1`` handling for ERA5 ``ap``
   coefficients.

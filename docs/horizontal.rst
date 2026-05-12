@@ -27,6 +27,11 @@ The current user-level path supports:
 * Packed reduced Gaussian fields when ``source_pl`` or ``source_grid="O<N>"``
   is supplied, or when xarray attributes contain ``GRIB_pl``.
 
+Reduced Gaussian input must be brought onto a regular-row grid with native
+spectral regridding before the user-level horizontal interpolation path is
+used. The packed reduced-Gaussian cases documented below are the direct native
+special cases.
+
 Example:
 
 .. code-block:: python

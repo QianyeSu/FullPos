@@ -1,6 +1,16 @@
 Validation
 ==========
 
+Current validation scope
+------------------------
+
+The current stable path to validate is narrow:
+
+* native spectral regridding,
+* native spectral filtering, and
+* native pressure-level and first-level vertical interpolation through the
+  OpenIFS/FULLPOS-backed paths documented in ``vertical.rst``.
+
 Unit Tests
 ----------
 
@@ -91,6 +101,12 @@ The full JSON metric record from this run was written as a project-local
 metrics artifact, and a Panoply-readable NetCDF sample was also produced for
 the same pressure-grid comparison.
 
+For reduced Gaussian inputs, validate the native spectral regrid first, then
+apply user-level horizontal interpolation only after the field has been
+converted to a regular-row grid. Packed reduced-Gaussian direct horizontal
+cases remain the narrower native special cases documented in
+``horizontal.rst``.
+
 The real-data pytest smoke for this stage uses the same native pressure path
 but does not require a fixed local file location. It reads the model-level and
 surface inputs from ``FULLPOS_ERA5_MODEL_FILE`` and
@@ -121,6 +137,14 @@ known theta profile, calls native ``GPTET``/``PPLTETA`` through
 surfaces. Dataset-level tests also verify that ``target="potential_temperature"``
 uses the dataset ``t`` variable to locate theta surfaces and then interpolates
 ``u``/``v`` through the native wind pair path.
+
+The current native FULLPOS/OpenIFS-backed vertical validation path is the
+pressure-level route: confirm that the Dataset input includes ``t``, ``u``,
+``v``, and ``q``, provide surface pressure, and check the native ``APACHE``
+attrs plus the pressure-level output against a known reference or the
+built-in smoke tests. The same dataset path is used for the implemented
+first-level targets, which remain wrappers around native pressure lookup and
+interpolation rather than a full ``POS`` workflow.
 
 Native temperature-surface calculation is covered by a low-level check that
 calls ``temperature_pressures`` and verifies finite positive target pressures

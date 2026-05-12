@@ -16,7 +16,7 @@ Current structure:
   layer for the implemented targets.
 * ``fullpos._vertical.common``: shared target naming and validation.
 * ``fullpos._vertical.pressure``: first implementation target for native
-  hybrid-to-pressure interpolation.
+  pressure and first-level interpolation.
 
 Current implementation status:
 
@@ -25,6 +25,8 @@ Current implementation status:
   backend. Dataset requests containing ``t``, ``u``, ``v``, and ``q`` use the
   native ``APACHE`` core for those variables; other pressure requests use the
   native PP-chain kernels directly.
+* ``target="pressure"`` is the stable user-facing entry point for the
+  implemented native pressure-level path on ERA5/OpenIFS model-level inputs.
 * ``target="model_level"`` uses a native PP-chain column-pressure backend. It
   accepts target hybrid half-level coefficients and interpolates to the
   resulting per-column target full-level pressures. The target full-level
@@ -50,6 +52,9 @@ Current implementation status:
 * ``target="eta"`` uses native ``PPLETA``/``GPHPRE`` to compute target
   pressures for integer FULLPOS eta/model-level indexes, then interpolates
   fields through the same native ``PPQ``/``PPUV``/``PPT`` kernels.
+* The implemented vertical path covers pressure-level and first-level lookups
+  only. Other derived targets remain partial or pending, and this page should
+  not be read as a claim of full ``POS`` coverage.
 * ``diagnose_potential_vorticity`` exposes the native FULLPOS ``GPPVO`` model
   level diagnostic. It can now auto-prepare relative vorticity, horizontal
   gradients, ``kappa`` from specific humidity, and Coriolis from Gaussian
