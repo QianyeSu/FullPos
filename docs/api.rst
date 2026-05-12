@@ -24,6 +24,7 @@ Common imports:
        horizontal_interpolate,
        capabilities,
        diagnose_potential_vorticity,
+       to_grib,
        vertical_interpolate,
    )
 
@@ -68,6 +69,12 @@ Vertical Interpolation
 ----------------------
 
 .. automodule:: fullpos.vertical
+   :members:
+
+GRIB I/O
+--------
+
+.. automodule:: fullpos.grib
    :members:
 
 Low-Level Native Kernels

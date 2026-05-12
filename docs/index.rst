@@ -19,6 +19,7 @@ the documentation marks it as not implemented.
    filtering
    horizontal
    vertical
+   grib
    metadata_history
    validation
    implementation_status

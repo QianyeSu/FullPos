@@ -180,6 +180,27 @@ The current filter API applies filter profiles to native ECTRANS spectral
 coefficients. Gaussian, low-pass, generic diagonal coefficient filters, and
 filter matrix read/write helpers are available.
 
+## GRIB output
+
+Use `to_grib()` to write xarray output back to GRIB with an existing GRIB
+template:
+
+```python
+from fullpos import regrid, to_grib
+
+out = regrid(ds["t"].isel(time=0), target_grid="O480")
+to_grib(out, "t_o480.grib2", template="template_o480_t.grib2")
+```
+
+The writer uses ecCodes to clone matching template messages and replace only
+the field values. This preserves template grid, level, time, packing, bitmap,
+and product metadata. It also means the template must already match the desired
+output layout; `to_grib()` does not convert an `O320` template into `O480`
+metadata and does not infer complete GRIB messages from xarray metadata.
+
+Install the optional GRIB dependencies with `pip install -e .[grib]
+--no-build-isolation`.
+
 ## Validation tools
 
 Run the test suite:
