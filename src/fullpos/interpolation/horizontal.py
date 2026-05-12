@@ -11,8 +11,6 @@ from .kernels import horizontal_halo_kernel, horizontal_regular_kernel
 def horizontal_interpolate(
     values,
     *,
-    source_lats=None,
-    source_lons=None,
     source_grid: str | GaussianGrid | None = None,
     source_pl=None,
     target_lats,
@@ -36,8 +34,6 @@ def horizontal_interpolate(
     """
     _validate_horizontal_request(
         values,
-        source_lats=source_lats,
-        source_lons=source_lons,
         source_grid=source_grid,
         source_pl=source_pl,
         target_lats=target_lats,
@@ -81,8 +77,6 @@ def horizontal_interpolate(
         )
     return _horizontal_interpolate_numpy(
         values,
-        source_lats=source_lats,
-        source_lons=source_lons,
         source_grid=source_grid,
         source_pl=source_pl,
         target_lats=target_lats,
@@ -116,8 +110,6 @@ def average_interpolate(values, **kwargs) -> np.ndarray:
 def _horizontal_interpolate_numpy(
     values,
     *,
-    source_lats,
-    source_lons,
     source_grid,
     source_pl,
     target_lats,
@@ -128,11 +120,7 @@ def _horizontal_interpolate_numpy(
 ) -> np.ndarray:
     arr = np.asarray(values)
     nloen = _resolve_source_pl(source_pl=source_pl, source_grid=source_grid, attrs=None)
-    src_lats, src_lons, source_shape = _resolve_numpy_source_geometry(
-        source_lats=source_lats,
-        source_lons=source_lons,
-        source_pl=nloen,
-    )
+    source_shape = _resolve_numpy_source_shape(source_pl=nloen, values=arr)
     tgt_lats = np.asarray(target_lats, dtype=np.float64)
     tgt_lons = np.asarray(target_lons, dtype=np.float64)
     moved, leading_shape, original_axes = _move_source_to_end(
@@ -146,8 +134,6 @@ def _horizontal_interpolate_numpy(
     for idx, field in enumerate(flat):
         out[idx] = kernel(
             field if nloen is not None else field.reshape(source_shape),
-            source_lats=src_lats,
-            source_lons=src_lons,
             source_pl=nloen,
             target_lats=tgt_lats,
             target_lons=tgt_lons,
@@ -172,7 +158,11 @@ def _horizontal_interpolate_data_array(
     keep_attrs: bool,
     average_radius: int = 1,
 ) -> xr.DataArray:
-    source = _resolve_xarray_source(obj, source_grid=source_grid, source_pl=source_pl)
+    source = _resolve_xarray_source(
+        obj,
+        source_grid=source_grid,
+        source_pl=source_pl,
+    )
     leading_dims = [dim for dim in obj.dims if dim not in source["dims"]]
     transposed = obj.transpose(*leading_dims, *source["dims"])
     src_lats = source["lats"]
@@ -308,8 +298,6 @@ def _halo_kwargs(method: str, average_radius: int) -> dict:
 def _validate_horizontal_request(
     values,
     *,
-    source_lats,
-    source_lons,
     source_grid,
     source_pl,
     target_lats,
@@ -349,21 +337,11 @@ def _validate_horizontal_request(
                 f"packed horizontal shape must be {(int(resolved_pl.sum()),)}, "
                 f"got {tuple(arr.shape[a] for a in axes)}"
             )
-        if source_lats is not None and np.asarray(source_lats).size != resolved_pl.size:
-            raise ValueError("source_lats must have one latitude per source row")
         return
-    if source_lats is None or source_lons is None:
-        raise ValueError("source_lats and source_lons are required for NumPy inputs")
-    source_lats_arr = np.asarray(source_lats)
-    source_lons_arr = np.asarray(source_lons)
-    if source_lats_arr.ndim != 1 or source_lons_arr.ndim != 1:
-        raise ValueError("source_lats and source_lons must be 1D arrays")
-    arr = np.asarray(values)
-    axes = _normalize_axis(axis, arr.ndim, 2)
-    actual_shape = tuple(arr.shape[a] for a in axes)
-    expected_shape = (source_lats_arr.size, source_lons_arr.size)
-    if actual_shape != expected_shape:
-        raise ValueError(f"horizontal shape must be {expected_shape}, got {actual_shape}")
+    raise ValueError(
+        "NumPy inputs are only supported for packed reduced Gaussian fields; "
+        "use xarray DataArray/Dataset for regular-row horizontal interpolation"
+    )
 
 
 def _validate_data_array_request(
@@ -477,26 +455,17 @@ def _target_dims_and_coords(
     return dims, coords
 
 
-def _resolve_numpy_source_geometry(
+def _resolve_numpy_source_shape(
     *,
-    source_lats,
-    source_lons,
     source_pl: np.ndarray | None,
-) -> tuple[np.ndarray, np.ndarray | None, tuple[int, ...]]:
+    values: np.ndarray,
+) -> tuple[int, ...]:
     if source_pl is not None:
-        src_lats = (
-            gaussian_latitudes(source_pl.size)
-            if source_lats is None
-            else np.asarray(source_lats, dtype=np.float64)
-        )
-        if src_lats.ndim != 1 or src_lats.size != source_pl.size:
-            raise ValueError("source_lats must have one latitude per source row")
-        return src_lats, None, (int(source_pl.sum()),)
-    src_lats = np.asarray(source_lats, dtype=np.float64)
-    src_lons = np.asarray(source_lons, dtype=np.float64)
-    if src_lats.ndim != 1 or src_lons.ndim != 1:
-        raise ValueError("source_lats and source_lons must be 1D arrays")
-    return src_lats, src_lons, (src_lats.size, src_lons.size)
+        return (int(source_pl.sum()),)
+    raise ValueError(
+        "NumPy inputs are only supported for packed reduced Gaussian fields; "
+        f"got regular array shape {values.shape}"
+    )
 
 
 def _resolve_xarray_source(
