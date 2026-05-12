@@ -54,14 +54,14 @@ def regular_longitudes(nlon: int) -> np.ndarray:
 
 
 def parse_grid(name: str) -> GaussianGrid:
-    """Parse a grid name such as ``O320`` or ``N320``."""
+    """Parse a grid name such as ``O320`` or ``F320``."""
     if not isinstance(name, str) or not name.strip():
         raise ValueError("grid name must be a non-empty string")
 
     normalized = name.strip().upper()
     prefix = normalized[0]
-    if prefix not in {"O", "N"}:
-        raise ValueError("Only O* octahedral and N* regular Gaussian grids are supported")
+    if prefix not in {"O", "F", "N"}:
+        raise ValueError("Only O* octahedral and F* regular Gaussian grids are supported")
 
     try:
         n = int(normalized[1:])
@@ -82,8 +82,9 @@ def parse_grid(name: str) -> GaussianGrid:
             pl=tuple(int(v) for v in pl),
         )
 
+    regular_name = f"F{n}" if prefix == "F" else normalized
     return GaussianGrid(
-        name=normalized,
+        name=regular_name,
         n=n,
         kind="regular",
         nlat=nlat,
@@ -113,7 +114,7 @@ def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
         if n is None:
             raise ValueError("regular Gaussian source grid requires GRIB_N metadata")
         _validate_regular_point_count(attrs, n)
-        return f"N{n}"
+        return f"F{n}"
 
     if pl is not None:
         inferred_n = _infer_octahedral_n_from_pl(pl, n)
@@ -128,7 +129,7 @@ def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
 
 
 def infer_grid_name_from_shape(sizes: Mapping[str, int], dims: tuple[str, ...]) -> str:
-    """Infer a regular Gaussian ``N`` grid from latitude/longitude dimensions."""
+    """Infer a regular Gaussian ``F`` grid from latitude/longitude dimensions."""
     if "latitude" not in dims or "longitude" not in dims:
         raise ValueError("source_grid is required when it cannot be inferred from metadata")
     nlat = int(sizes["latitude"])
@@ -140,7 +141,7 @@ def infer_grid_name_from_shape(sizes: Mapping[str, int], dims: tuple[str, ...]) 
         raise ValueError(
             "regular Gaussian longitude dimension must be 4*N for automatic inference"
         )
-    return f"N{n}"
+    return f"F{n}"
 
 
 def _infer_octahedral_n_from_pl(pl: np.ndarray, n: int | None) -> int:
@@ -153,7 +154,7 @@ def _infer_octahedral_n_from_pl(pl: np.ndarray, n: int | None) -> int:
     if not np.array_equal(pl.astype(np.int64), expected):
         raise ValueError(
             "reduced Gaussian grid is not an ECMWF octahedral O-grid; "
-            "only O* reduced and N* regular Gaussian grids are currently supported"
+            "only O* reduced and F* regular Gaussian grids are currently supported"
         )
     return inferred_n
 
@@ -165,7 +166,7 @@ def _validate_regular_point_count(attrs: Mapping, n: int) -> None:
     expected = 8 * int(n) * int(n)
     if int(number_of_points) != expected:
         raise ValueError(
-            f"regular Gaussian point count {number_of_points} is inconsistent with N{n} "
+            f"regular Gaussian point count {number_of_points} is inconsistent with F{n} "
             f"(expected {expected})"
         )
 
