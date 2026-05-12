@@ -24,6 +24,9 @@ The current user-level path supports:
 * Global regular-row fields where every latitude row has the same longitude
   count. In practice this covers regular Gaussian ``N`` grids and regular
   Gaussian fields decoded as ``(latitude, longitude)``.
+* Regular latitude/longitude ``LL`` targets for xarray inputs, including
+  ``LL1.0`` and ``LL0.25``. The output uses cell-center latitude coordinates,
+  and the wrapper stays on the native FULLPOS path.
 * Packed reduced Gaussian fields when ``source_pl`` or ``source_grid="O<N>"``
   is supplied, or when xarray attributes contain ``GRIB_pl``.
 
@@ -32,25 +35,38 @@ spectral regridding before the user-level horizontal interpolation path is
 used. The packed reduced-Gaussian cases documented below are the direct native
 special cases.
 
+``LL`` is output-only in the current stable surface. It is not accepted as a
+``source_grid`` for ``regrid``.
+
 Example:
 
 .. code-block:: python
 
    import numpy as np
+   import xarray as xr
    from fullpos import horizontal_interpolate
 
+   lats = np.linspace(89.0, -89.0, 8)
+   lons = np.linspace(0.0, 337.5, 16)
+   da = xr.DataArray(
+       np.ones((8, 16)),
+       dims=("latitude", "longitude"),
+       coords={"latitude": lats, "longitude": lons},
+   )
    target_lats_1d = np.linspace(89.0, -89.0, 181)
    target_lons_1d = np.linspace(0.0, 359.0, 360)
    target_lons, target_lats = np.meshgrid(target_lons_1d, target_lats_1d)
 
    out = horizontal_interpolate(
-       field,
-       source_lats=source_lats,
-       source_lons=source_lons,
+       da,
        target_lats=target_lats,
        target_lons=target_lons,
        method="bilinear",
+       chunks={"time": 1, "hybrid": 10},
    )
+
+If the input is plain NumPy data, wrap it in an ``xarray.DataArray`` with
+``latitude`` and ``longitude`` coordinates before calling the public API.
 
 xarray DataArray Usage
 ----------------------

@@ -53,6 +53,15 @@ bitmaps, for example SST over land, contain missing values and are rejected by
 default with `missing_policy="error"`. Full native FULLPOS land/sea-mask
 weighted SST interpolation is not implemented yet.
 
+`regrid(..., target_grid="LL1.0")` and `regrid(..., target_grid="LL0.25")`
+are supported for xarray inputs. These regular lat/lon targets stay on the
+native FULLPOS horizontal path, return cell-center latitude coordinates, and
+may first promote a Gaussian source through native spectral regridding when
+the stencil needs extra polar coverage. This is not a Python fallback.
+Current stable `regrid` support is Gaussian/O/F/N -> Gaussian/O/F/N and
+Gaussian/O/F/N -> regular lat/lon (`LL1.0`, `LL0.25`). `LL` is output-only at
+this stage and is not supported as `source_grid`.
+
 Dataset inputs can be regridded directly. Variables without horizontal grid
 dimensions are skipped by default unless explicitly requested with
 `variables=`.
@@ -95,6 +104,7 @@ Packed reduced Gaussian input is supported when `source_grid="O96"`,
 Mask-aware horizontal interpolation with `source_mask` is intentionally still
 reported as not implemented until the corresponding native FULLPOS land/sea
 mask workflow is wired in.
+Mask-aware SST interpolation is still not implemented.
 
 ## Vertical pressure interpolation
 
@@ -221,7 +231,7 @@ extern/fullpos/local
 Use a different FIAT/ECTRANS installation prefix at build time with Meson:
 
 ```powershell
-python -m pip install -e . --no-build-isolation --no-deps --config-settings=setup-args="-Dfullpos_native_prefix=C:\path\to\native\prefix"
+python -m pip install -e . --no-build-isolation --no-deps --config-settings=setup-args="-Dfullpos_native_prefix=<path-to-native-prefix>"
 ```
 
 For runtime diagnostics or local testing, `FULLPOS_NATIVE_PREFIX` can override

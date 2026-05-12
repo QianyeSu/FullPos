@@ -8,10 +8,21 @@ Spectral regridding uses the native ECTRANS/FIAT path exposed by the
 ``fullpos._ectrans`` extension. It does not fall back to Skyborn or another
 Python spectral transform implementation.
 
+Regular latitude/longitude targets such as ``target_grid="LL1.0"`` and
+``target_grid="LL0.25"`` are accepted for xarray inputs. They are handled by
+native FULLPOS horizontal kernels, not a Python fallback, and the output uses
+cell-center latitude coordinates such as ``89.5 .. -89.5`` for 1-degree
+grids. When needed, the wrapper first promotes a Gaussian source through the
+native spectral regrid path to keep the interpolation stencil valid.
+These ``LL`` targets are output-only in the current stable surface and are not
+accepted as ``source_grid`` values.
+
 Supported Gaussian grids:
 
 * ``O<N>`` octahedral reduced Gaussian grids, stored as packed 1D fields.
-* ``N<N>`` regular Gaussian grids, stored as ``(latitude, longitude)`` fields.
+* ``F<N>`` full regular Gaussian grids, stored as ``(latitude, longitude)``
+  fields.
+* ``N<N>`` regular Gaussian aliases for the same full regular Gaussian layout.
 
 Basic xarray Usage
 ------------------

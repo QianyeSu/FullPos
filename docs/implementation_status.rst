@@ -13,6 +13,9 @@ The documented stable path is intentionally narrow:
 * native spectral filtering, and
 * native pressure-level vertical interpolation through the current
   OpenIFS/FULLPOS-backed dataset paths.
+* native Gaussian/O/F/N -> Gaussian/O/F/N and Gaussian/O/F/N -> ``LL1.0`` /
+  ``LL0.25`` regridding. ``LL`` is output-only and is not supported as
+  ``source_grid``.
 
 Completed
 ---------
@@ -21,6 +24,9 @@ Completed
   ``regrid_values``.
 * xarray ``DataArray`` and ``Dataset`` spectral regridding with metadata and
   history preservation.
+* Native regular latitude/longitude ``LL1.0`` and ``LL0.25`` output through
+  ``regrid(...)`` on the FULLPOS horizontal path, with cell-center latitude
+  coordinates and no Python fallback.
 * Native spectral fitting through ``spectral_fit`` and ``spectral_fit_values``.
 * Native spectral synthesis through ``spectral_synthesis`` and
   ``spectral_synthesis_values``.
@@ -150,7 +156,8 @@ Current Grid Handling
 ---------------------
 
 The spectral path supports ``O<N>`` octahedral reduced Gaussian grids and
-``N<N>`` regular Gaussian grids.
+``F<N>`` full regular Gaussian grids. ``N<N>`` remains accepted as a
+compatibility alias for the regular Gaussian layout.
 
 The user-level horizontal path supports regular-row input and packed reduced
 Gaussian input for unmasked ``bilinear``/``quadratic12``/``nearest``/``average``
@@ -162,7 +169,6 @@ interpolation. Real decoded examples:
   requires providing compatible ``source_pl`` row lengths.
 * O96 ``reduced_gg``: packed octahedral reduced Gaussian field, usable through
   ``source_grid="O96"`` or ``GRIB_pl``.
-
 Next milestones
 ---------------
 
