@@ -13,6 +13,7 @@ numpy_inc = run_command(
   ['-c', 'import numpy; print(numpy.get_include())'],
   check: true,
 ).stdout().strip()
+fortran_compiler = meson.get_compiler('fortran')
 
 native_prefix_opt = get_option('fullpos_native_prefix')
 if native_prefix_opt == ''
@@ -89,6 +90,10 @@ fullpos_fortran_args = [
   '-I' + fullpos_native_prefix / 'module' / 'fiat',
   '-I' + fullpos_native_prefix / 'include' / 'fiat',
 ]
+
+if fortran_compiler.get_id() == 'gcc'
+  fullpos_fortran_args += ['-ffree-line-length-none']
+endif
 
 py.extension_module(
   '_ectrans',
