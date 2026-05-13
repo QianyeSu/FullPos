@@ -25,8 +25,12 @@ else
   fullpos_native_prefix = native_prefix_opt
   ectrans_inc = include_directories(numpy_inc)
 endif
+native_libdir_name = 'lib'
+if host_machine.system() != 'windows' and fs.exists(fullpos_native_prefix / 'lib64')
+  native_libdir_name = 'lib64'
+endif
 ectrans_includedir = fullpos_native_prefix / 'include'
-ectrans_libdir = fullpos_native_prefix / 'lib'
+ectrans_libdir = fullpos_native_prefix / native_libdir_name
 
 ectrans_c_args = [
   '-I' + ectrans_includedir,
@@ -68,7 +72,7 @@ elif host_machine.system() == 'darwin'
     'libparkind_sp.dylib',
   ]
 else
-  native_runtime_source_dir = fullpos_native_prefix / 'lib'
+  native_runtime_source_dir = fullpos_native_prefix / native_libdir_name
   native_runtime_install_dir = py.get_install_dir() / 'fullpos' / '_native' / 'lib'
   native_install_rpath = '$ORIGIN/_native/lib'
   native_runtime_libraries = [
