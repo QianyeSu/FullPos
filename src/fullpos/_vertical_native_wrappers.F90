@@ -1613,25 +1613,11 @@ subroutine fullpos_diagnose_potential_vorticity_c(ncol, nlev, u_values, v_values
   integer(c_int), intent(out) :: ierr
 
   integer(kind=jpim) :: j, k
+  external :: gppvo
   type(tvab) :: vab
   real(kind=jprb), allocatable :: presh(:,:), presf(:,:), rdelp(:,:), kappa(:,:)
   real(kind=jprb), allocatable :: u(:,:), v(:,:), t(:,:), vort(:,:), tm(:,:), tl(:,:), spm(:), spl(:), cor(:)
   real(kind=jprb), allocatable :: pvo(:,:), theta(:,:)
-
-  interface
-    subroutine gppvo(ydvab, kproma, kstart, kprof, kflev, presf, prdelp, pkap, prcori, &
-                     pvor, pu, pv, pt, ptm, ptl, pspm, pspl, pvo, pteta)
-      use parkind1, only: jpim, jprb
-      use yomvert, only: tvab
-      type(tvab), intent(in) :: ydvab
-      integer(kind=jpim), intent(in) :: kproma, kstart, kprof, kflev
-      real(kind=jprb), intent(in) :: presf(kproma,kflev), prdelp(kproma,kflev), pkap(kproma,kflev)
-      real(kind=jprb), intent(in) :: prcori(kproma), pvor(kproma,kflev), pu(kproma,kflev), pv(kproma,kflev)
-      real(kind=jprb), intent(in) :: pt(kproma,kflev), ptm(kproma,kflev), ptl(kproma,kflev)
-      real(kind=jprb), intent(in) :: pspm(kproma), pspl(kproma)
-      real(kind=jprb), intent(out) :: pvo(kproma,kflev), pteta(kproma,kflev)
-    end subroutine gppvo
-  end interface
 
   ierr = 0_c_int
   if (ncol <= 0 .or. nlev <= 1) then

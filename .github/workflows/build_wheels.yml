@@ -44,7 +44,7 @@ jobs:
           brew list openblas >/dev/null 2>&1 || brew install openblas
           brew list cmake >/dev/null 2>&1 || brew install cmake
           brew list ninja >/dev/null 2>&1 || brew install ninja
-          python3 -m pip install --user --upgrade delocate
+          python3 -m pip install --user --break-system-packages --upgrade delocate
           echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
 
           GCC_PREFIX="$(brew --prefix gcc)"
@@ -165,7 +165,7 @@ jobs:
             python {project}\tools\build_native_prefix.py --fetch-ecbuild --clean
           CIBW_ENVIRONMENT_WINDOWS: CC=${{ env.MSYS2_CC }} CXX=${{ env.MSYS2_CXX }} FC=${{ env.MSYS2_FC }} F77=${{ env.MSYS2_FC }} F90=${{ env.MSYS2_FC }} PKG_CONFIG=${{ env.MSYS2_PKG_CONFIG }} CMAKE_PREFIX_PATH=${{ env.MSYS2_PREFIX }}
           CIBW_CONFIG_SETTINGS: setup-args=-Dfullpos_bundle_native_runtime=true
-          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: delvewheel repair --add-path "${{ env.MSYS2_BIN }}" -w {dest_dir} {wheel}
+          CIBW_REPAIR_WHEEL_COMMAND_WINDOWS: delvewheel repair --add-path "${{ github.workspace }}\\extern\\fullpos\\local\\bin;${{ env.MSYS2_BIN }}" -w {dest_dir} {wheel}
           CIBW_TEST_COMMAND: python -c "from fullpos import doctor; report = doctor(); assert report['ok'], report; print('FullPos native doctor PASS')"
           CIBW_BUILD_VERBOSITY: 1
 
