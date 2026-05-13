@@ -13,14 +13,16 @@ _NATIVE_LIB_STEMS = (
     "parkind_dp",
     "parkind_sp",
 )
-_WINDOWS_EXTERNAL_RUNTIME_LIBRARIES = (
-    "openblas.dll",
-    "libgfortran-5.dll",
-    "libgomp-1.dll",
-    "libstdc++-6.dll",
-    "libwinpthread-1.dll",
-    "libgcc_s_seh-1.dll",
-)
+_WINDOWS_EXTERNAL_RUNTIME_LIBRARY_CANDIDATES = {
+    # MSYS2 packages typically ship the OpenBLAS runtime as libopenblas.dll.
+    # Keep openblas.dll as a fallback for other toolchain layouts.
+    "openblas.dll": ("openblas.dll", "libopenblas.dll"),
+    "libgfortran-5.dll": ("libgfortran-5.dll",),
+    "libgomp-1.dll": ("libgomp-1.dll",),
+    "libstdc++-6.dll": ("libstdc++-6.dll",),
+    "libwinpthread-1.dll": ("libwinpthread-1.dll",),
+    "libgcc_s_seh-1.dll": ("libgcc_s_seh-1.dll",),
+}
 
 
 def native_runtime_dir() -> Path:
@@ -68,14 +70,24 @@ def native_library_status() -> dict[str, bool]:
 def external_runtime_library_names() -> tuple[str, ...]:
     """Return external toolchain runtime libraries checked by diagnostics."""
     if sys.platform == "win32":
-        return _WINDOWS_EXTERNAL_RUNTIME_LIBRARIES
+        return tuple(_WINDOWS_EXTERNAL_RUNTIME_LIBRARY_CANDIDATES)
     # Linux/macOS names are toolchain-dependent; keep this explicit until those builds exist.
     return ()
 
 
 def external_runtime_library_status() -> dict[str, str | None]:
     """Return discovered paths for external runtime libraries."""
-    return {name: _find_runtime_library(name) for name in external_runtime_library_names()}
+    if sys.platform != "win32":
+        return {}
+    status: dict[str, str | None] = {}
+    for canonical_name, candidates in _WINDOWS_EXTERNAL_RUNTIME_LIBRARY_CANDIDATES.items():
+        path = None
+        for candidate in candidates:
+            path = _find_runtime_library(candidate)
+            if path is not None:
+                break
+        status[canonical_name] = path
+    return status
 
 
 def add_native_runtime_dir() -> None:
