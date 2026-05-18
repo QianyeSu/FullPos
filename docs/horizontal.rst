@@ -16,6 +16,9 @@ Current native coverage:
 * ``nearest`` uses ``SUHOX1`` halo address generation plus ``FPNEAR``.
 * ``average`` uses ``SUHOX1`` halo address generation plus ``FPAVG``.
 
+For ``quadratic12``, the user-level API also exposes the native
+``FPINT12`` monotonic clamp through ``shape_preserving=True``.
+
 Supported User-Level Input
 --------------------------
 
@@ -80,8 +83,13 @@ For xarray inputs, the API detects ``latitude`` and ``longitude`` dimensions:
        target_lats=target_lats,
        target_lons=target_lons,
        method="quadratic12",
+        shape_preserving=True,
        chunks={"time": 1, "hybrid": 10},
    )
+
+``shape_preserving=True`` is a direct wrapper around the original
+OpenIFS/FULLPOS ``LDMONO`` branch in ``FPINT12``. It is only valid for
+``method="quadratic12"``. It does not apply to spectral regridding.
 
 ``chunks`` uses named xarray dimensions. It controls how leading dimensions are
 split before calling the native kernel. It is not used for NumPy inputs.

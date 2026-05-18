@@ -144,12 +144,16 @@ def horizontal_regular_kernel(
     target_lats,
     target_lons,
     method: str = "bilinear",
+    monotonic: bool = False,
 ) -> np.ndarray:
     """Call native FULLPOS ``SUHOW1/SUHOW2`` plus ``FPINT4``/``FPINT12``.
 
     The source can be either a rectangular regular-row field with
     ``source_lats`` and ``source_lons``, or a packed reduced Gaussian field with
     ``source_pl``/``source_grid``. Coordinates are in degrees.
+
+    ``monotonic=True`` enables the native ``FPINT12`` monotonic clamp and is
+    only valid together with ``method="quadratic12"``.
     """
     add_native_runtime_dir()
     from .. import _ectrans
@@ -165,6 +169,9 @@ def horizontal_regular_kernel(
     tgt_lons = np.asarray(target_lons, dtype=np.float64)
     if tgt_lats.shape != tgt_lons.shape:
         raise ValueError("target_lats and target_lons must have matching shapes")
+    normalized_method = _normalize_regular_method(method)
+    if monotonic and normalized_method != "quadratic12":
+        raise ValueError("monotonic=True is only supported with method='quadratic12'")
 
     flat = np.asfortranarray(field, dtype=np.float64)
     out = _ectrans.horizontal_regular_kernel(
@@ -173,7 +180,8 @@ def horizontal_regular_kernel(
         np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
         np.asfortranarray(np.deg2rad(tgt_lats.reshape(-1)), dtype=np.float64),
         np.asfortranarray(np.deg2rad(tgt_lons.reshape(-1)), dtype=np.float64),
-        _normalize_regular_method(method),
+        normalized_method,
+        int(bool(monotonic)),
     )
     return np.asarray(out, dtype=np.float64).reshape(tgt_lats.shape)
 

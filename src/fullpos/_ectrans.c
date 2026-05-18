@@ -94,6 +94,7 @@ extern void fullpos_horizontal_regular_c(
     const int *nsrc_points,
     const int *ntarget_points,
     const int *kbinl,
+    const int *ldmono_i,
     const double *values,
     const int *nloen,
     const double *source_lats,
@@ -1298,19 +1299,20 @@ static PyObject *ectrans_fpnear_kernel(PyObject *self, PyObject *args, PyObject 
 
 static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *args, PyObject *kwargs)
 {
-    static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", NULL};
+    static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", "monotonic", NULL};
     PyObject *values_obj = NULL, *nloen_obj = NULL, *source_lats_obj = NULL;
     PyObject *target_lats_obj = NULL, *target_lons_obj = NULL;
     const char *method = "bilinear";
+    int monotonic = 0;
     PyArrayObject *values = NULL, *nloen = NULL, *source_lats = NULL, *target_lats = NULL, *target_lons = NULL;
     PyArrayObject *out = NULL;
     int kbinl = 4;
     int ierr = 0;
     (void)self;
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|s", kwlist,
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", kwlist,
                                      &values_obj, &nloen_obj, &source_lats_obj,
-                                     &target_lats_obj, &target_lons_obj, &method)) {
+                                     &target_lats_obj, &target_lons_obj, &method, &monotonic)) {
         return NULL;
     }
     if (strcmp(method, "bilinear") == 0 || strcmp(method, "fpint4") == 0) {
@@ -1319,6 +1321,10 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
         kbinl = 12;
     } else {
         PyErr_SetString(PyExc_ValueError, "method must be 'bilinear'/'fpint4' or 'quadratic12'/'fpint12'");
+        return NULL;
+    }
+    if (monotonic && kbinl != 12) {
+        PyErr_SetString(PyExc_ValueError, "monotonic=True is only supported with method='quadratic12'");
         return NULL;
     }
 
@@ -1351,6 +1357,7 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
         &nsrc_points,
         &ntarget_points,
         &kbinl,
+        &monotonic,
         (const double *)PyArray_DATA(values),
         (const int *)PyArray_DATA(nloen),
         (const double *)PyArray_DATA(source_lats),

@@ -47,6 +47,39 @@ def test_quadratic12_interpolate_matches_source_grid_points() -> None:
     np.testing.assert_allclose(out.values, obj.values[2:-2], atol=1.0e-11)
 
 
+def test_quadratic12_shape_preserving_clamps_native_overshoot() -> None:
+    lats = gaussian_latitudes(16)
+    lons = regular_longitudes(32)
+    values = np.zeros((16, 32), dtype=np.float64)
+    values[7, 10] = 1.0
+    obj = xr.DataArray(
+        values,
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
+    target_lats = np.linspace(lats[5], lats[10], 21)
+    target_lons = np.linspace(lons[8], lons[13], 21)
+    target_lats, target_lons = np.meshgrid(target_lats, target_lons, indexing="ij")
+
+    unconstrained = horizontal_interpolate(
+        obj,
+        target_lats=target_lats,
+        target_lons=target_lons,
+        method="quadratic12",
+    )
+    monotonic = horizontal_interpolate(
+        obj,
+        target_lats=target_lats,
+        target_lons=target_lons,
+        method="quadratic12",
+        shape_preserving=True,
+    )
+
+    assert float(unconstrained.min()) < 0.0
+    assert float(monotonic.min()) >= 0.0
+    assert float(monotonic.max()) <= 1.0
+
+
 def test_nearest_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
@@ -229,6 +262,23 @@ def test_horizontal_interpolate_validates_bad_xarray_chunks() -> None:
             target_lats=np.array([0.0]),
             target_lons=np.array([0.0]),
             chunks={"level": 1},
+        )
+
+
+def test_horizontal_interpolate_rejects_shape_preserving_for_non_fpint12_methods() -> None:
+    obj = xr.DataArray(
+        np.ones((8, 16)),
+        dims=("latitude", "longitude"),
+        coords={"latitude": gaussian_latitudes(8), "longitude": regular_longitudes(16)},
+    )
+
+    with pytest.raises(ValueError, match="shape_preserving=True"):
+        horizontal_interpolate(
+            obj,
+            target_lats=np.array([0.0]),
+            target_lons=np.array([0.0]),
+            method="bilinear",
+            shape_preserving=True,
         )
 
 

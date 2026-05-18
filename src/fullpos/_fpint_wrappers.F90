@@ -287,13 +287,13 @@ contains
 end subroutine fullpos_horizontal_halo_c
 
 
-subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl, values, nloen, source_lats, &
-                                        target_lats, target_lons, output, ierr) bind(C)
+subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl, ldmono_i, values, nloen, &
+                                        source_lats, target_lats, target_lons, output, ierr) bind(C)
   use iso_c_binding, only: c_int, c_double
   use parkind1, only: jpim, jprb
   implicit none
 
-  integer(c_int), intent(in) :: nlat, nsrc_points, ntarget_points, kbinl
+  integer(c_int), intent(in) :: nlat, nsrc_points, ntarget_points, kbinl, ldmono_i
   integer(c_int), intent(in) :: nloen(nlat)
   real(c_double), intent(in) :: values(nsrc_points), source_lats(nlat)
   real(c_double), intent(in) :: target_lats(ntarget_points), target_lons(ntarget_points)
@@ -439,7 +439,7 @@ subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl
   kdmp = 0
   ldnrst = .false.
   ldmask = .false.
-  ldmono = .false.
+  ldmono = ldmono_i /= 0
 
   if (kbinl == 4) then
     call fpint4(kaslb1, kfprow, kfields, kgpst, kgpend, kproma, kfldbuf, kder, kdmp, &

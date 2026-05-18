@@ -16,6 +16,7 @@ def horizontal_interpolate(
     target_lats,
     target_lons,
     method: str = "bilinear",
+    shape_preserving: bool = False,
     axis: int | tuple[int, int] | None = None,
     missing_value=None,
     source_mask=None,
@@ -52,6 +53,9 @@ def horizontal_interpolate(
     ``source_mask`` currently raises ``FullposNotImplementedError`` because
     native mask-aware horizontal interpolation has not been wired into the
     public API yet.
+
+    ``shape_preserving=True`` exposes the native OpenIFS/FULLPOS ``FPINT12``
+    monotonic branch. It is only valid together with ``method="quadratic12"``.
     """
     _validate_horizontal_request(
         values,
@@ -60,6 +64,7 @@ def horizontal_interpolate(
         target_lats=target_lats,
         target_lons=target_lons,
         method=method,
+        shape_preserving=shape_preserving,
         axis=axis,
         chunks=chunks,
         variables=variables,
@@ -81,6 +86,7 @@ def horizontal_interpolate(
             chunks=chunks,
             keep_attrs=keep_attrs,
             average_radius=average_radius,
+            shape_preserving=shape_preserving,
             variables=variables,
             skip_non_horizontal=skip_non_horizontal,
         )
@@ -95,6 +101,7 @@ def horizontal_interpolate(
             chunks=chunks,
             keep_attrs=keep_attrs,
             average_radius=average_radius,
+            shape_preserving=shape_preserving,
         )
     return _horizontal_interpolate_numpy(
         values,
@@ -103,6 +110,7 @@ def horizontal_interpolate(
         target_lats=target_lats,
         target_lons=target_lons,
         method=method,
+        shape_preserving=shape_preserving,
         axis=axis,
         average_radius=average_radius,
     )
@@ -130,7 +138,8 @@ def quadratic12_interpolate(values, **kwargs) -> np.ndarray:
     """Interpolate using a 12-point high-order regular-grid stencil.
 
     See ``horizontal_interpolate`` for packed reduced Gaussian metadata
-    requirements and mask-aware interpolation limitations.
+    requirements, mask-aware interpolation limitations, and the
+    ``shape_preserving`` monotonic option.
     """
     return horizontal_interpolate(values, method="quadratic12", **kwargs)
 
@@ -152,6 +161,7 @@ def _horizontal_interpolate_numpy(
     target_lats,
     target_lons,
     method: str,
+    shape_preserving: bool,
     axis: int | tuple[int, int],
     average_radius: int,
 ) -> np.ndarray:
@@ -175,6 +185,7 @@ def _horizontal_interpolate_numpy(
             target_lats=tgt_lats,
             target_lons=tgt_lons,
             method=_normalize_method(method),
+            **_regular_kwargs(method, shape_preserving),
             **_halo_kwargs(method, average_radius),
         )
     result = out.reshape(leading_shape + tgt_lats.shape)
@@ -194,6 +205,7 @@ def _horizontal_interpolate_data_array(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
     average_radius: int = 1,
+    shape_preserving: bool = False,
 ) -> xr.DataArray:
     source = _resolve_xarray_source(
         obj,
@@ -220,6 +232,7 @@ def _horizontal_interpolate_data_array(
             target_lats=tgt_lats,
             target_lons=tgt_lons,
             method=_normalize_method(method),
+            **_regular_kwargs(method, shape_preserving),
             **_halo_kwargs(method, average_radius),
         )
     else:
@@ -242,6 +255,7 @@ def _horizontal_interpolate_data_array(
                     target_lats=tgt_lats,
                     target_lons=tgt_lons,
                     method=_normalize_method(method),
+                    **_regular_kwargs(method, shape_preserving),
                     **_halo_kwargs(method, average_radius),
                 )
             out_values[leading_slice + tuple(slice(None) for _ in tgt_lats.shape)] = block_out.reshape(
@@ -264,6 +278,7 @@ def _horizontal_interpolate_dataset(
     chunks: dict[str, int] | None,
     keep_attrs: bool,
     average_radius: int,
+    shape_preserving: bool,
     variables,
     skip_non_horizontal: bool,
 ) -> xr.Dataset:
@@ -290,6 +305,7 @@ def _horizontal_interpolate_dataset(
             chunks=chunks,
             keep_attrs=keep_attrs,
             average_radius=average_radius,
+            shape_preserving=shape_preserving,
         )
     return out
 
@@ -302,6 +318,10 @@ def _normalize_method(method: str) -> str:
         "linear": "bilinear",
         "12": "quadratic12",
         "fpint12": "quadratic12",
+        "fpint12_monotonic": "quadratic12",
+        "monotonic": "quadratic12",
+        "monotonic12": "quadratic12",
+        "quadratic12_monotonic": "quadratic12",
         "quadratic": "quadratic12",
         "nearest_neighbour": "nearest",
         "nearest_neighbor": "nearest",
@@ -332,6 +352,12 @@ def _halo_kwargs(method: str, average_radius: int) -> dict:
     return {"kslwide": radius}
 
 
+def _regular_kwargs(method: str, shape_preserving: bool) -> dict:
+    if _normalize_method(method) != "quadratic12":
+        return {}
+    return {"monotonic": bool(shape_preserving)}
+
+
 def _validate_horizontal_request(
     values,
     *,
@@ -340,12 +366,15 @@ def _validate_horizontal_request(
     target_lats,
     target_lons,
     method: str,
+    shape_preserving: bool,
     axis: int | tuple[int, int],
     chunks: dict[str, int] | None,
     variables,
     skip_non_horizontal: bool,
 ) -> None:
     _normalize_method(method)
+    if shape_preserving and _normalize_method(method) != "quadratic12":
+        raise ValueError("shape_preserving=True is only supported with method='quadratic12'")
     target_lats_arr = np.asarray(target_lats)
     target_lons_arr = np.asarray(target_lons)
     if target_lats_arr.shape != target_lons_arr.shape:
