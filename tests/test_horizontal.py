@@ -80,6 +80,37 @@ def test_quadratic12_shape_preserving_clamps_native_overshoot() -> None:
     assert float(monotonic.max()) <= 1.0
 
 
+def test_quadratic12_monotonic_method_alias_matches_shape_preserving_flag() -> None:
+    lats = gaussian_latitudes(16)
+    lons = regular_longitudes(32)
+    values = np.zeros((16, 32), dtype=np.float64)
+    values[7, 10] = 1.0
+    obj = xr.DataArray(
+        values,
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
+    target_lats = np.linspace(lats[5], lats[10], 21)
+    target_lons = np.linspace(lons[8], lons[13], 21)
+    target_lats, target_lons = np.meshgrid(target_lats, target_lons, indexing="ij")
+
+    via_flag = horizontal_interpolate(
+        obj,
+        target_lats=target_lats,
+        target_lons=target_lons,
+        method="quadratic12",
+        shape_preserving=True,
+    )
+    via_alias = horizontal_interpolate(
+        obj,
+        target_lats=target_lats,
+        target_lons=target_lons,
+        method="quadratic12_monotonic",
+    )
+
+    np.testing.assert_allclose(via_alias.values, via_flag.values, atol=1.0e-14)
+
+
 def test_nearest_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)

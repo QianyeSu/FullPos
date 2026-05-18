@@ -55,7 +55,8 @@ def horizontal_interpolate(
     public API yet.
 
     ``shape_preserving=True`` exposes the native OpenIFS/FULLPOS ``FPINT12``
-    monotonic branch. It is only valid together with ``method="quadratic12"``.
+    monotonic branch. It is only valid together with ``method="quadratic12"``
+    or the explicit alias ``method="quadratic12_monotonic"``.
     """
     _validate_horizontal_request(
         values,
@@ -336,6 +337,16 @@ def _normalize_method(method: str) -> str:
     return normalized
 
 
+def _method_implies_shape_preserving(method: str) -> bool:
+    normalized = str(method).lower().replace("-", "_")
+    return normalized in {
+        "fpint12_monotonic",
+        "monotonic",
+        "monotonic12",
+        "quadratic12_monotonic",
+    }
+
+
 def _select_horizontal_kernel(method: str):
     normalized = _normalize_method(method)
     if normalized in {"nearest", "average"}:
@@ -355,7 +366,7 @@ def _halo_kwargs(method: str, average_radius: int) -> dict:
 def _regular_kwargs(method: str, shape_preserving: bool) -> dict:
     if _normalize_method(method) != "quadratic12":
         return {}
-    return {"monotonic": bool(shape_preserving)}
+    return {"monotonic": bool(shape_preserving or _method_implies_shape_preserving(method))}
 
 
 def _validate_horizontal_request(
@@ -373,7 +384,8 @@ def _validate_horizontal_request(
     skip_non_horizontal: bool,
 ) -> None:
     _normalize_method(method)
-    if shape_preserving and _normalize_method(method) != "quadratic12":
+    resolved_shape_preserving = bool(shape_preserving or _method_implies_shape_preserving(method))
+    if resolved_shape_preserving and _normalize_method(method) != "quadratic12":
         raise ValueError("shape_preserving=True is only supported with method='quadratic12'")
     target_lats_arr = np.asarray(target_lats)
     target_lons_arr = np.asarray(target_lons)

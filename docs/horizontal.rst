@@ -18,6 +18,7 @@ Current native coverage:
 
 For ``quadratic12``, the user-level API also exposes the native
 ``FPINT12`` monotonic clamp through ``shape_preserving=True``.
+The explicit alias ``method="quadratic12_monotonic"`` is equivalent.
 
 Supported User-Level Input
 --------------------------
@@ -82,12 +83,11 @@ For xarray inputs, the API detects ``latitude`` and ``longitude`` dimensions:
        da,
        target_lats=target_lats,
        target_lons=target_lons,
-       method="quadratic12",
-        shape_preserving=True,
+       method="quadratic12_monotonic",
        chunks={"time": 1, "hybrid": 10},
    )
 
-``shape_preserving=True`` is a direct wrapper around the original
+``shape_preserving=True`` or ``method="quadratic12_monotonic"`` is a direct wrapper around the original
 OpenIFS/FULLPOS ``LDMONO`` branch in ``FPINT12``. It is only valid for
 ``method="quadratic12"``. It does not apply to spectral regridding.
 
