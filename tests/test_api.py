@@ -397,6 +397,51 @@ def test_regridder_from_dataarray_uses_classic_reduced_grid_for_explicit_n_alias
     assert regridder.target_grid.name == "F4"
 
 
+def test_regridder_from_dataarray_uses_classic_reduced_grid_for_explicit_n_target() -> None:
+    pl = np.array([10, 12, 14, 16, 16, 14, 12, 10], dtype=np.int64)
+    obj = xr.DataArray(
+        np.ones(int(pl.sum()), dtype=np.float32),
+        dims=("values",),
+        attrs={
+            "GRIB_gridType": "reduced_gg",
+            "GRIB_N": 4,
+            "GRIB_pl": pl,
+        },
+    )
+
+    regridder = Regridder.from_dataarray(obj, target_grid="N4", source_grid="N4")
+
+    assert regridder.source_grid.kind == "classic_reduced"
+    assert regridder.target_grid.name == "N4"
+    assert regridder.target_grid.kind == "classic_reduced"
+    assert regridder.target_grid.size == int(pl.sum())
+
+
+def test_regridder_from_dataarray_uses_preserved_source_pl_for_explicit_n_target() -> None:
+    pl = np.array([10, 12, 14, 16, 16, 14, 12, 10], dtype=np.int64)
+    obj = xr.DataArray(
+        np.ones((8, 16), dtype=np.float32),
+        dims=("latitude", "longitude"),
+        attrs={
+            "GRIB_gridType": "regular_gg",
+            "GRIB_N": 4,
+            "fullpos_source_grid": "N4",
+            "fullpos_source_grid_kind": "classic_reduced",
+            "fullpos_source_GRIB_N": 4,
+            "fullpos_source_GRIB_gridType": "reduced_gg",
+            "fullpos_source_GRIB_numberOfPoints": int(pl.sum()),
+            "fullpos_source_GRIB_pl": pl,
+        },
+    )
+
+    regridder = Regridder.from_dataarray(obj, target_grid="N4", source_grid="F4")
+
+    assert regridder.source_grid.name == "F4"
+    assert regridder.target_grid.name == "N4"
+    assert regridder.target_grid.kind == "classic_reduced"
+    assert regridder.target_grid.size == int(pl.sum())
+
+
 def test_regridder_from_dataset_infers_source_grid() -> None:
     ds = xr.Dataset(
         data_vars={

@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 from ..grids import GaussianGrid, gaussian_latitudes, regular_longitudes
-from ..metadata import append_history, format_regrid_history
+from ..metadata import append_history, format_regrid_history, preserve_source_grid_attrs
 from .native import spectral_regrid_chunks
 
 
@@ -118,6 +118,7 @@ def _output_attrs(
     chunk_size: int | None,
 ) -> dict:
     out = dict(attrs) if keep_attrs else {}
+    out = preserve_source_grid_attrs(out, source_grid)
     out["GRIB_N"] = target_grid.n
     out["GRIB_gridType"] = "reduced_gg" if target_grid.is_reduced else "regular_gg"
     out["GRIB_numberOfPoints"] = target_grid.size
