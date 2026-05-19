@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 from ..grids import GaussianGrid, gaussian_latitudes, parse_grid
-from ..metadata import append_history, format_regrid_history, infer_source_grid
+from ..metadata import append_history, format_regrid_history, infer_source_grid, resolve_source_grid
 from .horizontal import horizontal_interpolate
 from .regridder import DEFAULT_CHUNK_SIZE, Regridder
 
@@ -84,9 +84,10 @@ def regrid(
         raise ValueError("method must be 'linear', 'spectral', or 'masked'")
 
     if isinstance(obj, xr.DataArray):
-        regridder = Regridder(
-            source_grid or infer_source_grid(obj),
-            target_grid,
+        regridder = Regridder.from_dataarray(
+            obj,
+            target_grid=target_grid,
+            source_grid=source_grid,
             ntrunc=ntrunc,
             chunk_size=chunk_size,
             missing_policy=missing_policy,
@@ -105,7 +106,17 @@ def regrid(
         for name in selected:
             data_array = obj[name]
             try:
-                variable_source_grid = parse_grid(source_grid or infer_source_grid(data_array))
+                regridder = Regridder.from_dataarray(
+                    data_array,
+                    target_grid=target_grid,
+                    source_grid=source_grid,
+                    ntrunc=ntrunc,
+                    chunk_size=chunk_size,
+                    missing_policy=missing_policy,
+                    method=method,
+                    missing_value=missing_value,
+                )
+                variable_source_grid = regridder.source_grid
             except ValueError as exc:
                 if variables is None and skip_non_horizontal:
                     continue
@@ -118,16 +129,6 @@ def regrid(
                     f"source grid {variable_source_grid!r}"
                 )
             try:
-                parsed_target = parse_grid(target_grid)
-                regridder = Regridder(
-                    variable_source_grid,
-                    parsed_target,
-                    ntrunc=ntrunc,
-                    chunk_size=chunk_size,
-                    missing_policy=missing_policy,
-                    method=method,
-                    missing_value=missing_value,
-                )
                 out[name] = regridder.regrid_data_array(data_array, keep_attrs=keep_attrs)
             except Exception as exc:
                 raise type(exc)(
@@ -348,12 +349,19 @@ def _regrid_regular_latlon(
     longitudes = target["longitude"]
     target_lats, target_lons = np.meshgrid(latitudes, longitudes, indexing="ij")
     horizontal_method = "bilinear" if str(method).lower() == "linear" else method
-    resolved_source_grid = source_grid
-    if resolved_source_grid is None:
+    resolved_source_grid = None
+    if source_grid is None:
         try:
-            resolved_source_grid = infer_source_grid(obj)
+            inferred = infer_source_grid(obj)
         except ValueError:
-            resolved_source_grid = None
+            inferred = None
+        resolved_source_grid = inferred if isinstance(inferred, GaussianGrid) else (
+            parse_grid(inferred) if inferred is not None else None
+        )
+    else:
+        resolved_source_grid = resolve_source_grid(obj, source_grid)
+        if not isinstance(resolved_source_grid, GaussianGrid):
+            resolved_source_grid = parse_grid(resolved_source_grid)
     obj, resolved_source_grid = _promote_source_if_regular_ll_needs_polar_coverage(
         obj,
         source_grid=resolved_source_grid,

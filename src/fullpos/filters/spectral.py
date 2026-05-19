@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
-from ..metadata import append_history, format_regrid_history, infer_source_grid
+from ..metadata import append_history, format_regrid_history, resolve_source_grid
 from ..interpolation import DEFAULT_CHUNK_SIZE, Regridder
 from ..spectral import spectral_fit, spectral_synthesis
 from .core import SpectralFilter
@@ -31,9 +31,11 @@ def spectral_filter(
         raise ValueError("ntrunc is required for spectral_filter")
 
     if isinstance(obj, xr.DataArray):
-        regridder = Regridder(
-            grid or infer_source_grid(obj),
-            grid or infer_source_grid(obj),
+        resolved_grid = resolve_source_grid(obj, grid)
+        regridder = Regridder.from_dataarray(
+            obj,
+            target_grid=resolved_grid,
+            source_grid=resolved_grid,
             ntrunc=ntrunc,
             chunk_size=chunk_size,
             missing_policy=missing_policy,
@@ -51,9 +53,11 @@ def spectral_filter(
                 out[name] = data_array
                 continue
             try:
-                regridder = Regridder(
-                    grid or infer_source_grid(data_array),
-                    grid or infer_source_grid(data_array),
+                resolved_grid = resolve_source_grid(data_array, grid)
+                regridder = Regridder.from_dataarray(
+                    data_array,
+                    target_grid=resolved_grid,
+                    source_grid=resolved_grid,
                     ntrunc=ntrunc,
                     chunk_size=chunk_size,
                     missing_policy=missing_policy,

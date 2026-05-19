@@ -5,16 +5,19 @@ from datetime import datetime
 import xarray as xr
 
 from .grids import (
+    GaussianGrid,
+    infer_grid_from_attrs,
     infer_grid_name_from_attrs,
     infer_grid_name_from_shape,
+    parse_grid,
 )
 
 
-def infer_source_grid(obj) -> str:
-    """Infer the source grid name from xarray metadata or dimensions."""
+def infer_source_grid(obj) -> str | GaussianGrid:
+    """Infer the source grid from xarray metadata or dimensions."""
     if isinstance(obj, xr.DataArray):
         try:
-            return infer_grid_name_from_attrs(obj.attrs)
+            return infer_grid_from_attrs(obj.attrs)
         except ValueError as exc:
             if has_grid_metadata(obj.attrs):
                 raise
@@ -26,6 +29,21 @@ def infer_source_grid(obj) -> str:
         for data_array in obj.data_vars.values():
             return infer_source_grid(data_array)
     raise ValueError("source_grid is required when it cannot be inferred from GRIB attrs")
+
+
+def resolve_source_grid(obj, source_grid=None) -> str | GaussianGrid:
+    """Resolve an explicit or inferred source grid, preserving packed metadata."""
+    if isinstance(source_grid, GaussianGrid):
+        return source_grid
+    if source_grid is None:
+        return infer_source_grid(obj)
+    text = str(source_grid).strip()
+    if text.upper().startswith("N"):
+        try:
+            return infer_source_grid(obj)
+        except ValueError:
+            pass
+    return parse_grid(text)
 
 
 def has_grid_metadata(attrs) -> bool:

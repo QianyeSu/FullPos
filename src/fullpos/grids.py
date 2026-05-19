@@ -38,6 +38,32 @@ def octahedral_pl(n: int) -> np.ndarray:
     return np.concatenate([north, north[::-1]])
 
 
+def classic_reduced_grid_from_pl(n: int, pl) -> GaussianGrid:
+    """Build a classic reduced Gaussian grid from GRIB row lengths."""
+    if n <= 0:
+        raise ValueError("grid resolution must be positive")
+    arr = np.asarray(pl, dtype=np.int64)
+    if arr.ndim != 1:
+        arr = arr.reshape(-1)
+    if arr.size == 0 or arr.size % 2:
+        raise ValueError("GRIB_pl must be a non-empty 1D array with 2*N rows")
+    if np.any(arr <= 0):
+        raise ValueError("GRIB_pl values must be positive")
+    inferred_n = int(arr.size // 2)
+    if int(n) != inferred_n:
+        raise ValueError(f"GRIB_N={n} is inconsistent with GRIB_pl length {arr.size}")
+    if not np.array_equal(arr, arr[::-1]):
+        raise ValueError("classic reduced Gaussian grid must be symmetric north/south")
+    return GaussianGrid(
+        name=f"N{int(n)}",
+        n=int(n),
+        kind="classic_reduced",
+        nlat=2 * int(n),
+        work_nlon=int(arr.max()),
+        pl=tuple(int(v) for v in arr),
+    )
+
+
 def gaussian_latitudes(nlat: int) -> np.ndarray:
     """Return Gaussian latitude coordinates in north-to-south order."""
     if nlat <= 0:
@@ -93,8 +119,8 @@ def parse_grid(name: str) -> GaussianGrid:
     )
 
 
-def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
-    """Infer a supported grid name from GRIB-style xarray attributes."""
+def infer_grid_from_attrs(attrs: Mapping | None) -> str | GaussianGrid:
+    """Infer a supported grid from GRIB-style xarray attributes."""
     if not attrs:
         raise ValueError("source_grid is required when it cannot be inferred from metadata")
 
@@ -107,8 +133,7 @@ def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
             raise ValueError(
                 "reduced Gaussian source grid requires GRIB_pl metadata for safe inference"
             )
-        inferred_n = _infer_octahedral_n_from_pl(pl, n)
-        return f"O{inferred_n}"
+        return _infer_reduced_grid_from_pl(pl, n)
 
     if grid_type == "regular_gg":
         if n is None:
@@ -117,8 +142,7 @@ def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
         return f"F{n}"
 
     if pl is not None:
-        inferred_n = _infer_octahedral_n_from_pl(pl, n)
-        return f"O{inferred_n}"
+        return _infer_reduced_grid_from_pl(pl, n)
 
     if n is not None and grid_type in {None, ""}:
         return f"N{n}"
@@ -126,6 +150,12 @@ def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
     if grid_type:
         raise ValueError(f"unsupported GRIB_gridType for spectral regridding: {grid_type!r}")
     raise ValueError("source_grid is required when it cannot be inferred from metadata")
+
+
+def infer_grid_name_from_attrs(attrs: Mapping | None) -> str:
+    """Infer a supported grid name from GRIB-style xarray attributes."""
+    grid = infer_grid_from_attrs(attrs)
+    return grid.name if isinstance(grid, GaussianGrid) else grid
 
 
 def infer_grid_name_from_shape(sizes: Mapping[str, int], dims: tuple[str, ...]) -> str:
@@ -157,6 +187,19 @@ def _infer_octahedral_n_from_pl(pl: np.ndarray, n: int | None) -> int:
             "only O* reduced and F* regular Gaussian grids are currently supported"
         )
     return inferred_n
+
+
+def _infer_reduced_grid_from_pl(pl: np.ndarray, n: int | None) -> str | GaussianGrid:
+    if pl.ndim != 1 or pl.size == 0 or pl.size % 2:
+        raise ValueError("GRIB_pl must be a non-empty 1D array with 2*N rows")
+    if np.any(pl <= 0):
+        raise ValueError("GRIB_pl values must be positive")
+    inferred_n = int(pl.size // 2) if n is None else int(n)
+    if pl.size != 2 * inferred_n:
+        raise ValueError(f"GRIB_N={n} is inconsistent with GRIB_pl length {pl.size}")
+    if np.array_equal(pl.astype(np.int64), octahedral_pl(inferred_n)):
+        return f"O{inferred_n}"
+    return classic_reduced_grid_from_pl(inferred_n, pl)
 
 
 def _validate_regular_point_count(attrs: Mapping, n: int) -> None:

@@ -359,6 +359,44 @@ def test_regridder_from_dataarray_infers_source_grid() -> None:
     np.testing.assert_allclose(out.values, 1.0, atol=1.0e-5)
 
 
+def test_regridder_from_dataarray_infers_classic_reduced_source_grid() -> None:
+    pl = np.array([10, 12, 14, 16, 16, 14, 12, 10], dtype=np.int64)
+    obj = xr.DataArray(
+        np.ones(int(pl.sum()), dtype=np.float32),
+        dims=("values",),
+        attrs={
+            "GRIB_gridType": "reduced_gg",
+            "GRIB_N": 4,
+            "GRIB_pl": pl,
+        },
+    )
+
+    regridder = Regridder.from_dataarray(obj, target_grid="F4")
+
+    assert regridder.source_grid.name == "N4"
+    assert regridder.source_grid.kind == "classic_reduced"
+    assert regridder.source_grid.size == int(pl.sum())
+
+
+def test_regridder_from_dataarray_uses_classic_reduced_grid_for_explicit_n_alias() -> None:
+    pl = np.array([10, 12, 14, 16, 16, 14, 12, 10], dtype=np.int64)
+    obj = xr.DataArray(
+        np.ones(int(pl.sum()), dtype=np.float32),
+        dims=("values",),
+        attrs={
+            "GRIB_gridType": "reduced_gg",
+            "GRIB_N": 4,
+            "GRIB_pl": pl,
+        },
+    )
+
+    regridder = Regridder.from_dataarray(obj, target_grid="F4", source_grid="N4")
+
+    assert regridder.source_grid.name == "N4"
+    assert regridder.source_grid.kind == "classic_reduced"
+    assert regridder.target_grid.name == "F4"
+
+
 def test_regridder_from_dataset_infers_source_grid() -> None:
     ds = xr.Dataset(
         data_vars={

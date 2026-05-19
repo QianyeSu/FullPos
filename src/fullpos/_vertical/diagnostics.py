@@ -5,8 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import xarray as xr
 
-from ..grids import GaussianGrid, gaussian_latitudes, infer_grid_name_from_attrs, infer_grid_name_from_shape, parse_grid
-from ..metadata import append_history
+from ..grids import GaussianGrid, gaussian_latitudes, infer_grid_name_from_shape, parse_grid
+from ..metadata import append_history, resolve_source_grid
 from ..native import add_native_runtime_dir
 from .pressure import (
     _find_hybrid_dim,
@@ -501,12 +501,12 @@ def _compute_gprcp_kappa(
 
 def _resolve_grid(obj: xr.DataArray, *, source_grid: str | GaussianGrid | None) -> GaussianGrid:
     """Resolve the Gaussian grid used by the native ECTRANS path."""
-    if isinstance(source_grid, GaussianGrid):
-        return source_grid
     if source_grid is not None:
-        return parse_grid(str(source_grid))
+        resolved = resolve_source_grid(obj, source_grid)
+        return resolved if isinstance(resolved, GaussianGrid) else parse_grid(resolved)
     try:
-        return parse_grid(infer_grid_name_from_attrs(obj.attrs))
+        resolved = resolve_source_grid(obj, None)
+        return resolved if isinstance(resolved, GaussianGrid) else parse_grid(resolved)
     except ValueError:
         return parse_grid(infer_grid_name_from_shape(obj.sizes, obj.dims))
 

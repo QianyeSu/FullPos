@@ -4,7 +4,7 @@ import numpy as np
 import xarray as xr
 
 from ..grids import GaussianGrid, gaussian_latitudes, parse_grid, regular_longitudes
-from ..metadata import infer_source_grid
+from ..metadata import resolve_source_grid
 from .native import spectral_regrid_chunks
 from .surface import masked_regrid_data_array, masked_regrid_values
 from .xarray import regrid_data_array
@@ -56,7 +56,7 @@ class Regridder:
     ) -> "Regridder":
         """Build a regridder by inferring the source grid from a DataArray."""
         return cls(
-            source_grid or infer_source_grid(obj),
+            resolve_source_grid(obj, source_grid),
             target_grid,
             ntrunc=ntrunc,
             chunk_size=chunk_size,
@@ -80,7 +80,7 @@ class Regridder:
     ) -> "Regridder":
         """Build a regridder by inferring the source grid from a Dataset."""
         return cls(
-            source_grid or infer_source_grid(obj),
+            resolve_source_grid(obj, source_grid),
             target_grid,
             ntrunc=ntrunc,
             chunk_size=chunk_size,
