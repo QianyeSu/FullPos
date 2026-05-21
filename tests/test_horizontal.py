@@ -111,6 +111,67 @@ def test_quadratic12_monotonic_method_alias_matches_shape_preserving_flag() -> N
     np.testing.assert_allclose(via_alias.values, via_flag.values, atol=1.0e-14)
 
 
+def test_quadratic12_monotonic_supports_regular_gaussian_target_grid() -> None:
+    lats = gaussian_latitudes(16)
+    lons = regular_longitudes(32)
+    values = np.zeros((16, 32), dtype=np.float64)
+    values[7, 10] = 1.0
+    obj = xr.DataArray(
+        values,
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+        attrs={"GRIB_N": 8, "GRIB_gridType": "regular_gg"},
+        name="q",
+    )
+
+    out = horizontal_interpolate(
+        obj,
+        source_grid="F8",
+        target_grid="F16",
+        method="quadratic12_monotonic",
+    )
+
+    assert out.dims == ("latitude", "longitude")
+    assert out.shape == (32, 64)
+    assert out.attrs["GRIB_N"] == 16
+    assert out.attrs["GRIB_gridType"] == "regular_gg"
+    assert out.attrs["GRIB_numberOfPoints"] == 32 * 64
+    assert "method=quadratic12_monotonic" in out.attrs["history"]
+    assert float(out.min()) >= 0.0
+    assert float(out.max()) <= 1.0
+
+
+def test_quadratic12_monotonic_supports_packed_o_grid_to_regular_gaussian_target() -> None:
+    pl = octahedral_pl(8)
+    rows = []
+    for row, row_nlon in enumerate(pl):
+        values = np.zeros(int(row_nlon), dtype=np.float64)
+        if row == 7:
+            values[10] = 1.0
+        rows.append(values)
+    obj = xr.DataArray(
+        np.concatenate(rows),
+        dims=("values",),
+        attrs={"GRIB_pl": pl, "GRIB_N": 8, "GRIB_gridType": "reduced_gg"},
+        name="q",
+    )
+
+    out = horizontal_interpolate(
+        obj,
+        source_grid="O8",
+        target_grid="F16",
+        method="quadratic12_monotonic",
+    )
+
+    assert out.dims == ("latitude", "longitude")
+    assert out.shape == (32, 64)
+    assert out.attrs["GRIB_N"] == 16
+    assert out.attrs["GRIB_gridType"] == "regular_gg"
+    assert "GRIB_pl" not in out.attrs
+    assert float(out.min()) >= 0.0
+    assert float(out.max()) <= 1.0
+
+
 def test_nearest_interpolate_matches_source_grid_points() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
@@ -209,6 +270,36 @@ def test_horizontal_interpolate_packed_reduced_data_array_uses_grib_pl() -> None
     np.testing.assert_allclose(out.isel(time=1).values, np.concatenate(expected) + 100.0, atol=1.0e-10)
 
 
+def test_horizontal_interpolate_n_alias_uses_grib_pl_when_present() -> None:
+    pl = octahedral_pl(4)
+    lats = gaussian_latitudes(pl.size)
+    rows = [row * 1000.0 + np.arange(row_nlon, dtype=np.float64) for row, row_nlon in enumerate(pl)]
+    obj = xr.DataArray(
+        np.concatenate(rows),
+        dims=("values",),
+        attrs={"GRIB_pl": pl, "GRIB_N": 4, "GRIB_gridType": "reduced_gg"},
+        name="q",
+    )
+    target_lats = []
+    target_lons = []
+    expected = []
+    for row in range(2, pl.size - 2):
+        row_lons = regular_longitudes(int(pl[row]))
+        target_lats.append(np.full(row_lons.shape, lats[row]))
+        target_lons.append(row_lons)
+        expected.append(rows[row])
+
+    out = horizontal_interpolate(
+        obj,
+        source_grid="N4",
+        target_lats=np.concatenate(target_lats),
+        target_lons=np.concatenate(target_lons),
+        method="quadratic12_monotonic",
+    )
+
+    np.testing.assert_allclose(out.values, np.concatenate(expected), atol=1.0e-10)
+
+
 def test_horizontal_interpolate_data_array_supports_chunks() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
@@ -235,6 +326,39 @@ def test_horizontal_interpolate_data_array_supports_chunks() -> None:
     assert out.attrs["units"] == "K"
     np.testing.assert_allclose(out.isel(time=0).values, base[2:-2], atol=1.0e-12)
     np.testing.assert_allclose(out.isel(time=1).values, base[2:-2] + 100.0, atol=1.0e-12)
+
+
+def test_horizontal_interpolate_chunks_use_batched_native_path() -> None:
+    pl = octahedral_pl(8)
+    rows = [row * 1000.0 + np.arange(row_nlon, dtype=np.float64) for row, row_nlon in enumerate(pl)]
+    base = np.concatenate(rows)
+    obj = xr.DataArray(
+        np.stack([base, base + 10.0, base * 0.5]),
+        dims=("hybrid", "values"),
+        coords={"hybrid": [1, 2, 3]},
+        attrs={"GRIB_pl": pl, "GRIB_N": 8, "GRIB_gridType": "reduced_gg"},
+        name="q",
+    )
+
+    batched = horizontal_interpolate(
+        obj,
+        source_grid="O8",
+        target_grid="F16",
+        method="quadratic12_monotonic",
+        chunks={"hybrid": 3},
+    )
+    single_fields = [
+        horizontal_interpolate(
+            obj.isel(hybrid=i),
+            source_grid="O8",
+            target_grid="F16",
+            method="quadratic12_monotonic",
+        ).values
+        for i in range(obj.sizes["hybrid"])
+    ]
+
+    assert batched.dims == ("hybrid", "latitude", "longitude")
+    np.testing.assert_allclose(batched.values, np.stack(single_fields), atol=1.0e-10)
 
 
 def test_horizontal_interpolate_dataset_skips_non_horizontal_variables() -> None:

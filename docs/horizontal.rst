@@ -19,6 +19,9 @@ Current native coverage:
 For ``quadratic12``, the user-level API also exposes the native
 ``FPINT12`` monotonic clamp through ``shape_preserving=True``.
 The explicit alias ``method="quadratic12_monotonic"`` is equivalent.
+This is the preferred horizontal path for bounded positive scalar fields such
+as specific humidity ``q`` and total column water vapour ``tcwv`` when spectral
+ringing must be avoided.
 
 Supported User-Level Input
 --------------------------
@@ -75,14 +78,15 @@ If the input is plain NumPy data, wrap it in an ``xarray.DataArray`` with
 xarray DataArray Usage
 ----------------------
 
-For xarray inputs, the API detects ``latitude`` and ``longitude`` dimensions:
+For xarray inputs, the API detects ``latitude`` and ``longitude`` dimensions.
+You can either pass explicit target coordinates or a regular Gaussian target
+grid such as ``F480``:
 
 .. code-block:: python
 
    out = horizontal_interpolate(
        da,
-       target_lats=target_lats,
-       target_lons=target_lons,
+       target_grid="F480",
        method="quadratic12_monotonic",
        chunks={"time": 1, "hybrid": 10},
    )
@@ -92,7 +96,11 @@ OpenIFS/FULLPOS ``LDMONO`` branch in ``FPINT12``. It is only valid for
 ``method="quadratic12"``. It does not apply to spectral regridding.
 
 ``chunks`` uses named xarray dimensions. It controls how leading dimensions are
-split before calling the native kernel. It is not used for NumPy inputs.
+split before calling the native kernel. Each chunk is submitted as a native
+FULLPOS ``KFIELDS`` batch, so ``chunks={"hybrid": 137}`` processes all model
+levels in one geometry/weight setup when memory allows. Smaller chunks reduce
+peak memory at the cost of more native calls. ``chunks`` is not used for NumPy
+inputs.
 
 Packed Reduced Gaussian Usage
 -----------------------------
@@ -104,9 +112,8 @@ Packed reduced input can be passed directly to the native horizontal path:
    out = horizontal_interpolate(
        packed_values,
        source_grid="O96",
-       target_lats=target_lats,
-       target_lons=target_lons,
-       method="bilinear",
+       target_grid="F480",
+       method="quadratic12_monotonic",
    )
 
 For xarray GRIB data, ``GRIB_pl`` is detected automatically:
@@ -115,11 +122,37 @@ For xarray GRIB data, ``GRIB_pl`` is detected automatically:
 
    out = horizontal_interpolate(
        da,
-       target_lats=target_lats,
-       target_lons=target_lons,
-       method="quadratic12",
+       target_grid="F480",
+       method="quadratic12_monotonic",
        chunks={"time": 1, "hybrid": 10},
    )
+
+For ERA5 water-vapour workflows this keeps the calculation on the native
+FULLPOS horizontal path:
+
+.. code-block:: python
+
+   q_f480 = horizontal_interpolate(
+       model_ds,
+       source_grid="N320",
+       target_grid="F480",
+       method="quadratic12_monotonic",
+       variables=["q"],
+       chunks={"time": 1, "hybrid": 137},
+   )
+
+   tcwv_f480 = horizontal_interpolate(
+       surface_ds,
+       source_grid="O320",
+       target_grid="F480",
+       method="quadratic12_monotonic",
+       variables=["tcwv"],
+       chunks={"time": 1},
+   )
+
+The output has regular Gaussian ``latitude`` and ``longitude`` dimensions and
+updated ``GRIB_N``/``GRIB_gridType`` metadata. This path does not use spectral
+interpolation.
 
 Dataset Usage
 -------------

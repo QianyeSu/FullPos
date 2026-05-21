@@ -4,8 +4,14 @@ import numpy as np
 import xarray as xr
 
 from ..errors import FullposNotImplementedError
-from ..grids import GaussianGrid, gaussian_latitudes, parse_grid
-from .kernels import horizontal_halo_kernel, horizontal_regular_kernel
+from ..grids import GaussianGrid, gaussian_latitudes, parse_grid, regular_longitudes
+from ..metadata import append_history, format_regrid_history
+from .kernels import (
+    horizontal_halo_kernel,
+    horizontal_halo_kernel_batch,
+    horizontal_regular_kernel,
+    horizontal_regular_kernel_batch,
+)
 
 
 def horizontal_interpolate(
@@ -13,8 +19,9 @@ def horizontal_interpolate(
     *,
     source_grid: str | GaussianGrid | None = None,
     source_pl=None,
-    target_lats,
-    target_lons,
+    target_lats=None,
+    target_lons=None,
+    target_grid: str | GaussianGrid | None = None,
     method: str = "bilinear",
     shape_preserving: bool = False,
     axis: int | tuple[int, int] | None = None,
@@ -58,12 +65,17 @@ def horizontal_interpolate(
     monotonic branch. It is only valid together with ``method="quadratic12"``
     or the explicit alias ``method="quadratic12_monotonic"``.
     """
+    resolved_target = _resolve_target(
+        target_lats=target_lats,
+        target_lons=target_lons,
+        target_grid=target_grid,
+    )
     _validate_horizontal_request(
         values,
         source_grid=source_grid,
         source_pl=source_pl,
-        target_lats=target_lats,
-        target_lons=target_lons,
+        target_lats=resolved_target["lats"],
+        target_lons=resolved_target["lons"],
         method=method,
         shape_preserving=shape_preserving,
         axis=axis,
@@ -79,8 +91,9 @@ def horizontal_interpolate(
     if isinstance(values, xr.Dataset):
         return _horizontal_interpolate_dataset(
             values,
-            target_lats=target_lats,
-            target_lons=target_lons,
+            target_lats=resolved_target["lats"],
+            target_lons=resolved_target["lons"],
+            target_grid=resolved_target["grid"],
             method=method,
             source_grid=source_grid,
             source_pl=source_pl,
@@ -94,8 +107,9 @@ def horizontal_interpolate(
     if isinstance(values, xr.DataArray):
         return _horizontal_interpolate_data_array(
             values,
-            target_lats=target_lats,
-            target_lons=target_lons,
+            target_lats=resolved_target["lats"],
+            target_lons=resolved_target["lons"],
+            target_grid=resolved_target["grid"],
             method=method,
             source_grid=source_grid,
             source_pl=source_pl,
@@ -108,8 +122,8 @@ def horizontal_interpolate(
         values,
         source_grid=source_grid,
         source_pl=source_pl,
-        target_lats=target_lats,
-        target_lons=target_lons,
+        target_lats=resolved_target["lats"],
+        target_lons=resolved_target["lons"],
         method=method,
         shape_preserving=shape_preserving,
         axis=axis,
@@ -200,6 +214,7 @@ def _horizontal_interpolate_data_array(
     *,
     target_lats,
     target_lons,
+    target_grid: GaussianGrid | None,
     method: str,
     source_grid: str | GaussianGrid | None,
     source_pl,
@@ -238,6 +253,7 @@ def _horizontal_interpolate_data_array(
         )
     else:
         kernel = _select_horizontal_kernel(method)
+        batch_kernel = _select_horizontal_batch_kernel(method)
         chunk_sizes = leading_chunks or tuple(transposed.sizes[dim] for dim in leading_dims)
         for leading_slice in _iter_leading_slices(transposed.shape[: len(leading_dims)], chunk_sizes):
             if nloen is not None:
@@ -246,10 +262,21 @@ def _horizontal_interpolate_data_array(
             else:
                 block = transposed.values[leading_slice + (slice(None), slice(None))]
                 flat = block.reshape((-1, src_lats.size, src_lons.size))
-            block_out = np.empty((flat.shape[0],) + tgt_lats.shape, dtype=np.float64)
-            for idx, field in enumerate(flat):
-                block_out[idx] = kernel(
-                    field,
+            if flat.shape[0] == 1:
+                block_out = kernel(
+                    flat[0],
+                    source_lats=src_lats,
+                    source_lons=src_lons,
+                    source_pl=nloen,
+                    target_lats=tgt_lats,
+                    target_lons=tgt_lons,
+                    method=_normalize_method(method),
+                    **_regular_kwargs(method, shape_preserving),
+                    **_halo_kwargs(method, average_radius),
+                ).reshape((1,) + tgt_lats.shape)
+            else:
+                block_out = batch_kernel(
+                    flat,
                     source_lats=src_lats,
                     source_lons=src_lons,
                     source_pl=nloen,
@@ -263,8 +290,21 @@ def _horizontal_interpolate_data_array(
                 block.shape[: -len(source["dims"])] + tgt_lats.shape
             )
 
-    target_dims, coords = _target_dims_and_coords(obj, leading_dims, tgt_lats, tgt_lons)
-    attrs = dict(obj.attrs) if keep_attrs else {}
+    target_dims, coords = _target_dims_and_coords(
+        obj,
+        leading_dims,
+        tgt_lats,
+        tgt_lons,
+        target_grid=target_grid,
+    )
+    attrs = _output_attrs(
+        obj.attrs,
+        source_grid=source_grid,
+        target_grid=target_grid,
+        method=method,
+        chunks=chunks,
+        keep_attrs=keep_attrs,
+    )
     return xr.DataArray(out_values, dims=target_dims, coords=coords, name=obj.name, attrs=attrs)
 
 
@@ -273,6 +313,7 @@ def _horizontal_interpolate_dataset(
     *,
     target_lats,
     target_lons,
+    target_grid: GaussianGrid | None,
     method: str,
     source_grid: str | GaussianGrid | None,
     source_pl,
@@ -300,6 +341,7 @@ def _horizontal_interpolate_dataset(
             data_array,
             target_lats=target_lats,
             target_lons=target_lons,
+            target_grid=target_grid,
             method=method,
             source_grid=source_grid,
             source_pl=source_pl,
@@ -309,6 +351,33 @@ def _horizontal_interpolate_dataset(
             shape_preserving=shape_preserving,
         )
     return out
+
+
+def _resolve_target(
+    *,
+    target_lats,
+    target_lons,
+    target_grid: str | GaussianGrid | None,
+) -> dict:
+    if target_grid is None:
+        if target_lats is None or target_lons is None:
+            raise ValueError("target_lats/target_lons or target_grid is required")
+        return {
+            "lats": np.asarray(target_lats, dtype=np.float64),
+            "lons": np.asarray(target_lons, dtype=np.float64),
+            "grid": None,
+        }
+    if target_lats is not None or target_lons is not None:
+        raise ValueError("pass either target_grid or target_lats/target_lons, not both")
+    grid = target_grid if isinstance(target_grid, GaussianGrid) else parse_grid(target_grid)
+    if grid.is_reduced:
+        raise ValueError(
+            "target_grid for horizontal_interpolate must be a regular Gaussian grid such as F480"
+        )
+    lats = gaussian_latitudes(grid.nlat)
+    lons = regular_longitudes(grid.work_nlon)
+    target_lats_2d, target_lons_2d = np.meshgrid(lats, lons, indexing="ij")
+    return {"lats": target_lats_2d, "lons": target_lons_2d, "grid": grid}
 
 
 def _normalize_method(method: str) -> str:
@@ -352,6 +421,13 @@ def _select_horizontal_kernel(method: str):
     if normalized in {"nearest", "average"}:
         return horizontal_halo_kernel
     return horizontal_regular_kernel
+
+
+def _select_horizontal_batch_kernel(method: str):
+    normalized = _normalize_method(method)
+    if normalized in {"nearest", "average"}:
+        return horizontal_halo_kernel_batch
+    return horizontal_regular_kernel_batch
 
 
 def _halo_kwargs(method: str, average_radius: int) -> dict:
@@ -510,12 +586,18 @@ def _target_dims_and_coords(
     leading_dims: list[str],
     target_lats: np.ndarray,
     target_lons: np.ndarray,
+    target_grid: GaussianGrid | None,
 ) -> tuple[tuple[str, ...], dict]:
     coords = {}
     leading_set = set(leading_dims)
     for name, coord in obj.coords.items():
         if set(coord.dims).issubset(leading_set):
             coords[name] = coord
+    if target_grid is not None:
+        dims = tuple(leading_dims) + ("latitude", "longitude")
+        coords["latitude"] = gaussian_latitudes(target_grid.nlat)
+        coords["longitude"] = regular_longitudes(target_grid.work_nlon)
+        return dims, coords
     if target_lats.ndim == 1:
         dims = tuple(leading_dims) + ("points",)
         coords["latitude"] = ("points", target_lats)
@@ -531,6 +613,33 @@ def _target_dims_and_coords(
     coords["latitude"] = (target_dims, target_lats)
     coords["longitude"] = (target_dims, target_lons)
     return dims, coords
+
+
+def _output_attrs(
+    attrs,
+    *,
+    source_grid,
+    target_grid: GaussianGrid | None,
+    method: str,
+    chunks: dict[str, int] | None,
+    keep_attrs: bool,
+) -> dict:
+    out = dict(attrs) if keep_attrs else {}
+    if target_grid is None:
+        return out
+    out["GRIB_N"] = target_grid.n
+    out["GRIB_gridType"] = "regular_gg"
+    out["GRIB_numberOfPoints"] = target_grid.size
+    out.pop("GRIB_pl", None)
+    return append_history(
+        out,
+        format_regrid_history(
+            source_grid=source_grid or "inferred",
+            target_grid=target_grid,
+            method=method,
+            chunk_size=chunks,
+        ),
+    )
 
 
 def _resolve_numpy_source_shape(
@@ -605,6 +714,10 @@ def _resolve_source_pl(
         grid = source_grid if isinstance(source_grid, GaussianGrid) else parse_grid(source_grid)
         if grid.pl is not None:
             return _validate_source_pl(grid.pl)
+        if attrs:
+            for key in ("GRIB_pl", "pl"):
+                if key in attrs:
+                    return _validate_source_pl(attrs[key])
         return None
     if attrs:
         for key in ("GRIB_pl", "pl"):

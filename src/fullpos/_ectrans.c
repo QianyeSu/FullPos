@@ -103,9 +103,39 @@ extern void fullpos_horizontal_regular_c(
     double *output,
     int *ierr);
 
+extern void fullpos_horizontal_regular_batch_c(
+    const int *nlat,
+    const int *nsrc_points,
+    const int *nfields,
+    const int *ntarget_points,
+    const int *kbinl,
+    const int *ldmono_i,
+    const double *values,
+    const int *nloen,
+    const double *source_lats,
+    const double *target_lats,
+    const double *target_lons,
+    double *output,
+    int *ierr);
+
 extern void fullpos_horizontal_halo_c(
     const int *nlat,
     const int *nsrc_points,
+    const int *ntarget_points,
+    const int *kslwide,
+    const int *use_near,
+    const double *values,
+    const int *nloen,
+    const double *source_lats,
+    const double *target_lats,
+    const double *target_lons,
+    double *output,
+    int *ierr);
+
+extern void fullpos_horizontal_halo_batch_c(
+    const int *nlat,
+    const int *nsrc_points,
+    const int *nfields,
     const int *ntarget_points,
     const int *kslwide,
     const int *use_near,
@@ -1378,6 +1408,93 @@ fail:
     return NULL;
 }
 
+static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", "monotonic", NULL};
+    PyObject *values_obj = NULL, *nloen_obj = NULL, *source_lats_obj = NULL;
+    PyObject *target_lats_obj = NULL, *target_lons_obj = NULL;
+    const char *method = "bilinear";
+    int monotonic = 0;
+    PyArrayObject *values = NULL, *nloen = NULL, *source_lats = NULL, *target_lats = NULL, *target_lons = NULL;
+    PyArrayObject *out = NULL;
+    int kbinl = 4;
+    int ierr = 0;
+    (void)self;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", kwlist,
+                                     &values_obj, &nloen_obj, &source_lats_obj,
+                                     &target_lats_obj, &target_lons_obj, &method, &monotonic)) {
+        return NULL;
+    }
+    if (strcmp(method, "bilinear") == 0 || strcmp(method, "fpint4") == 0) {
+        kbinl = 4;
+    } else if (strcmp(method, "quadratic12") == 0 || strcmp(method, "fpint12") == 0) {
+        kbinl = 12;
+    } else {
+        PyErr_SetString(PyExc_ValueError, "method must be 'bilinear'/'fpint4' or 'quadratic12'/'fpint12'");
+        return NULL;
+    }
+    if (monotonic && kbinl != 12) {
+        PyErr_SetString(PyExc_ValueError, "monotonic=True is only supported with method='quadratic12'");
+        return NULL;
+    }
+
+    values = as_fortran_array(values_obj, NPY_DOUBLE, 2, 2);
+    nloen = as_fortran_array(nloen_obj, NPY_INT, 1, 1);
+    source_lats = as_fortran_array(source_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lats = as_fortran_array(target_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lons = as_fortran_array(target_lons_obj, NPY_DOUBLE, 1, 1);
+    if (!values || !nloen || !source_lats || !target_lats || !target_lons) {
+        goto fail;
+    }
+    int nlat = (int)PyArray_DIM(nloen, 0);
+    int nsrc_points = (int)PyArray_DIM(values, 0);
+    int nfields = (int)PyArray_DIM(values, 1);
+    int ntarget_points = (int)PyArray_DIM(target_lats, 0);
+    if (PyArray_DIM(source_lats, 0) != nlat ||
+        PyArray_DIM(target_lons, 0) != ntarget_points) {
+        PyErr_SetString(PyExc_ValueError, "source_lats/nloen or target_lats/target_lons dimensions are inconsistent");
+        goto fail;
+    }
+    if (nfields <= 0) {
+        PyErr_SetString(PyExc_ValueError, "values must contain at least one field");
+        goto fail;
+    }
+    {
+        npy_intp dims[2] = {(npy_intp)ntarget_points, (npy_intp)nfields};
+        out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+        if (!out) {
+            goto fail;
+        }
+    }
+
+    fullpos_horizontal_regular_batch_c(
+        &nlat,
+        &nsrc_points,
+        &nfields,
+        &ntarget_points,
+        &kbinl,
+        &monotonic,
+        (const double *)PyArray_DATA(values),
+        (const int *)PyArray_DATA(nloen),
+        (const double *)PyArray_DATA(source_lats),
+        (const double *)PyArray_DATA(target_lats),
+        (const double *)PyArray_DATA(target_lons),
+        (double *)PyArray_DATA(out),
+        &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_ValueError, "FULLPOS horizontal regular batch kernel failed with ierr=%d", ierr);
+        goto fail;
+    }
+
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return (PyObject *)out;
+fail:
+    Py_XDECREF(out);
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return NULL;
+}
+
 static PyObject *ectrans_horizontal_halo_kernel(PyObject *self, PyObject *args, PyObject *kwargs)
 {
     static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", "kslwide", NULL};
@@ -1459,6 +1576,93 @@ fail:
     return NULL;
 }
 
+static PyObject *ectrans_horizontal_halo_kernel_batch(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", "kslwide", NULL};
+    PyObject *values_obj = NULL, *nloen_obj = NULL, *source_lats_obj = NULL;
+    PyObject *target_lats_obj = NULL, *target_lons_obj = NULL;
+    const char *method = "nearest";
+    int kslwide = 1;
+    int use_near = 1;
+    int ierr = 0;
+    PyArrayObject *values = NULL, *nloen = NULL, *source_lats = NULL, *target_lats = NULL, *target_lons = NULL;
+    PyArrayObject *out = NULL;
+    (void)self;
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|si", kwlist,
+                                     &values_obj, &nloen_obj, &source_lats_obj,
+                                     &target_lats_obj, &target_lons_obj, &method, &kslwide)) {
+        return NULL;
+    }
+    if (strcmp(method, "nearest") == 0 || strcmp(method, "fpnear") == 0) {
+        use_near = 1;
+    } else if (strcmp(method, "average") == 0 || strcmp(method, "fpavg") == 0) {
+        use_near = 0;
+    } else {
+        PyErr_SetString(PyExc_ValueError, "method must be 'nearest'/'fpnear' or 'average'/'fpavg'");
+        return NULL;
+    }
+    if (kslwide <= 0) {
+        PyErr_SetString(PyExc_ValueError, "kslwide must be positive");
+        return NULL;
+    }
+
+    values = as_fortran_array(values_obj, NPY_DOUBLE, 2, 2);
+    nloen = as_fortran_array(nloen_obj, NPY_INT, 1, 1);
+    source_lats = as_fortran_array(source_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lats = as_fortran_array(target_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lons = as_fortran_array(target_lons_obj, NPY_DOUBLE, 1, 1);
+    if (!values || !nloen || !source_lats || !target_lats || !target_lons) {
+        goto fail;
+    }
+    int nlat = (int)PyArray_DIM(nloen, 0);
+    int nsrc_points = (int)PyArray_DIM(values, 0);
+    int nfields = (int)PyArray_DIM(values, 1);
+    int ntarget_points = (int)PyArray_DIM(target_lats, 0);
+    if (PyArray_DIM(source_lats, 0) != nlat ||
+        PyArray_DIM(target_lons, 0) != ntarget_points) {
+        PyErr_SetString(PyExc_ValueError, "source_lats/nloen or target_lats/target_lons dimensions are inconsistent");
+        goto fail;
+    }
+    if (nfields <= 0) {
+        PyErr_SetString(PyExc_ValueError, "values must contain at least one field");
+        goto fail;
+    }
+    {
+        npy_intp dims[2] = {(npy_intp)ntarget_points, (npy_intp)nfields};
+        out = (PyArrayObject *)PyArray_EMPTY(2, dims, NPY_DOUBLE, 1);
+        if (!out) {
+            goto fail;
+        }
+    }
+
+    fullpos_horizontal_halo_batch_c(
+        &nlat,
+        &nsrc_points,
+        &nfields,
+        &ntarget_points,
+        &kslwide,
+        &use_near,
+        (const double *)PyArray_DATA(values),
+        (const int *)PyArray_DATA(nloen),
+        (const double *)PyArray_DATA(source_lats),
+        (const double *)PyArray_DATA(target_lats),
+        (const double *)PyArray_DATA(target_lons),
+        (double *)PyArray_DATA(out),
+        &ierr);
+    if (ierr != 0) {
+        PyErr_Format(PyExc_ValueError, "FULLPOS horizontal halo batch kernel failed with ierr=%d", ierr);
+        goto fail;
+    }
+
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return (PyObject *)out;
+fail:
+    Py_XDECREF(out);
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return NULL;
+}
+
 static PyMethodDef EctransMethods[] = {
     {"fit", (PyCFunction)ectrans_fit, METH_VARARGS | METH_KEYWORDS,
      "Transform global Gaussian scalar field(s) to ECTRANS spectral coefficients."},
@@ -1472,8 +1676,12 @@ static PyMethodDef EctransMethods[] = {
      "Call the native OpenIFS/FULLPOS FPNEAR interpolation kernel with precomputed halo addresses and masks."},
     {"horizontal_regular_kernel", (PyCFunction)ectrans_horizontal_regular_kernel, METH_VARARGS | METH_KEYWORDS,
      "Call native OpenIFS/FULLPOS SUHOW1/SUHOW2 plus FPINT4/FPINT12 for regular global rows."},
+    {"horizontal_regular_kernel_batch", (PyCFunction)ectrans_horizontal_regular_kernel_batch, METH_VARARGS | METH_KEYWORDS,
+     "Call native OpenIFS/FULLPOS SUHOW1/SUHOW2 plus FPINT4/FPINT12 for a batch of regular global rows."},
     {"horizontal_halo_kernel", (PyCFunction)ectrans_horizontal_halo_kernel, METH_VARARGS | METH_KEYWORDS,
      "Call native OpenIFS/FULLPOS SUHOX1 plus FPNEAR/FPAVG for nearest/average halo interpolation."},
+    {"horizontal_halo_kernel_batch", (PyCFunction)ectrans_horizontal_halo_kernel_batch, METH_VARARGS | METH_KEYWORDS,
+     "Call native OpenIFS/FULLPOS SUHOX1 plus FPNEAR/FPAVG for a batch of nearest/average halo interpolation."},
     {"regrid", (PyCFunction)ectrans_regrid, METH_VARARGS | METH_KEYWORDS,
      "Regrid one global Gaussian scalar field through ECTRANS spectral coefficients."},
     {"synthesis", (PyCFunction)ectrans_synthesis, METH_VARARGS | METH_KEYWORDS,
