@@ -195,13 +195,15 @@ def horizontal_regular_kernel(
         )
     else:
         out = np.empty(flat_tgt_lats.size, dtype=np.float64)
+        safe_indexer = _contiguous_true_slice(safe)
         if np.any(safe):
-            out[safe] = _ectrans.horizontal_regular_kernel(
+            safe_points = safe if safe_indexer is None else safe_indexer
+            out[safe_points] = _ectrans.horizontal_regular_kernel(
                 flat,
                 np.asfortranarray(nloen, dtype=np.int32),
                 np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
-                np.asfortranarray(np.deg2rad(flat_tgt_lats[safe]), dtype=np.float64),
-                np.asfortranarray(np.deg2rad(flat_tgt_lons[safe]), dtype=np.float64),
+                np.asfortranarray(np.deg2rad(flat_tgt_lats[safe_points]), dtype=np.float64),
+                np.asfortranarray(np.deg2rad(flat_tgt_lons[safe_points]), dtype=np.float64),
                 normalized_method,
                 int(bool(monotonic)),
             )
@@ -266,29 +268,50 @@ def horizontal_regular_kernel_batch(
         return np.asarray(out, dtype=np.float64).T.reshape((fields.shape[0],) + tgt_lats.shape)
 
     out = np.empty((fields.shape[0], flat_tgt_lats.size), dtype=np.float64)
+    safe_indexer = _contiguous_true_slice(safe)
     if np.any(safe):
+        safe_points = safe if safe_indexer is None else safe_indexer
         safe_out = _ectrans.horizontal_regular_kernel_batch(
             flat,
             np.asfortranarray(nloen, dtype=np.int32),
             np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
-            np.asfortranarray(np.deg2rad(flat_tgt_lats[safe]), dtype=np.float64),
-            np.asfortranarray(np.deg2rad(flat_tgt_lons[safe]), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_tgt_lats[safe_points]), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_tgt_lons[safe_points]), dtype=np.float64),
             normalized_method,
             int(bool(monotonic)),
         )
-        out[:, safe] = np.asarray(safe_out, dtype=np.float64).T
+        out[:, safe_points] = np.asarray(safe_out, dtype=np.float64).T
     unsafe = ~safe
-    unsafe_out = _ectrans.horizontal_halo_kernel_batch(
-        flat,
-        np.asfortranarray(nloen, dtype=np.int32),
-        np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
-        np.asfortranarray(np.deg2rad(flat_tgt_lats[unsafe]), dtype=np.float64),
-        np.asfortranarray(np.deg2rad(np.nextafter(flat_tgt_lons[unsafe], np.inf)), dtype=np.float64),
-        "nearest",
-        1,
+    nloen_f = np.asfortranarray(nloen, dtype=np.int32)
+    src_lats_rad = np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64)
+    unsafe_lats_rad = np.asfortranarray(np.deg2rad(flat_tgt_lats[unsafe]), dtype=np.float64)
+    unsafe_lons_rad = np.asfortranarray(
+        np.deg2rad(np.nextafter(flat_tgt_lons[unsafe], np.inf)),
+        dtype=np.float64,
     )
-    out[:, unsafe] = np.asarray(unsafe_out, dtype=np.float64).T
+    for idx, field in enumerate(fields):
+        out[idx, unsafe] = _ectrans.horizontal_halo_kernel(
+            np.asfortranarray(field, dtype=np.float64),
+            nloen_f,
+            src_lats_rad,
+            unsafe_lats_rad,
+            unsafe_lons_rad,
+            "nearest",
+            1,
+        )
     return out.reshape((fields.shape[0],) + tgt_lats.shape)
+
+
+def _contiguous_true_slice(mask: np.ndarray) -> slice | None:
+    """Return a slice when all true entries form one contiguous span."""
+    idx = np.flatnonzero(mask)
+    if idx.size == 0:
+        return None
+    start = int(idx[0])
+    stop = int(idx[-1]) + 1
+    if idx.size == stop - start:
+        return slice(start, stop)
+    return None
 
 
 def horizontal_halo_kernel(

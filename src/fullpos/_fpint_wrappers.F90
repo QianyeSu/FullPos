@@ -170,7 +170,7 @@ subroutine fullpos_horizontal_halo_c(nlat, nsrc_points, ntarget_points, kslwide,
   integer(kind=jpim) :: kdgsa, kdgen, kfrstloff, kproma, kend, kfields, kmasks
   integer(kind=jpim) :: kfldbuf, kgpst, kgpend, kaslb1, kslw
   integer(kind=jpim) :: j, slot, col, n, total_ext, offset_src, offset_ext, row, lon0
-  integer(kind=jpim), allocatable :: kla(:), klo(:,:), ks0(:,:), kmask(:)
+  integer(kind=jpim), allocatable :: kla(:), klo(:,:), ks0(:,:), kmask(:), row_offsets(:)
   integer(kind=jpim), allocatable :: ldmask_i(:)
   logical :: ldmask(1)
   real(kind=jprb) :: pi, p4jp, pundef
@@ -218,11 +218,12 @@ subroutine fullpos_horizontal_halo_c(nlat, nsrc_points, ntarget_points, kslwide,
   do j = 1, nlat
     total_ext = total_ext + nloen(j) + 2 * kslw
   enddo
-  allocate(pbuf_ext(total_ext))
+  allocate(pbuf_ext(total_ext), row_offsets(nlat))
   offset_src = 0
   offset_ext = 0
   do j = 1, nlat
     n = nloen(j)
+    row_offsets(j) = offset_ext
     do col = 1, kslw
       pbuf_ext(offset_ext + col) = values(offset_src + mod(n - kslw + col - 1, n) + 1)
     enddo
@@ -243,7 +244,7 @@ subroutine fullpos_horizontal_halo_c(nlat, nsrc_points, ntarget_points, kslwide,
       if (row < 1) row = 1
       if (row > nlat) row = nlat
       lon0 = mod(klo(j,slot), nloen(row))
-      ks0(j,slot) = row_offset_halo(nloen, nlat, row, kslw) + kslw + lon0 + 1
+      ks0(j,slot) = row_offsets(row) + kslw + lon0 + 1
     enddo
   enddo
 
@@ -258,6 +259,7 @@ subroutine fullpos_horizontal_halo_c(nlat, nsrc_points, ntarget_points, kslwide,
   ldmask_i = 0
   ldmask = .false.
   pmask = 1.0_jprb
+  prow = pundef
 
   if (use_near /= 0) then
     call fpnear(kaslb1, kslw, kfields, kmasks, kgpst, kgpend, kproma, kfldbuf, &
@@ -268,17 +270,6 @@ subroutine fullpos_horizontal_halo_c(nlat, nsrc_points, ntarget_points, kslwide,
   endif
   output = prow(:,1)
 
-contains
-  integer(kind=jpim) function row_offset_halo(kloen_local, nlat_local, row, halo)
-    integer(c_int), intent(in) :: kloen_local(nlat_local)
-    integer(c_int), intent(in) :: nlat_local
-    integer(kind=jpim), intent(in) :: row, halo
-    integer(kind=jpim) :: jj
-    row_offset_halo = 0
-    do jj = 1, row - 1
-      row_offset_halo = row_offset_halo + kloen_local(jj) + 2 * halo
-    enddo
-  end function row_offset_halo
 end subroutine fullpos_horizontal_halo_c
 
 
@@ -299,7 +290,7 @@ subroutine fullpos_horizontal_halo_batch_c(nlat, nsrc_points, nfields, ntarget_p
   integer(kind=jpim) :: kdgsa, kdgen, kfrstloff, kproma, kend, kfields, kmasks
   integer(kind=jpim) :: kfldbuf, kgpst, kgpend, kaslb1, kslw
   integer(kind=jpim) :: fld, j, slot, col, n, total_ext, offset_src, offset_ext, row, lon0
-  integer(kind=jpim), allocatable :: kla(:), klo(:,:), ks0(:,:), kmask(:)
+  integer(kind=jpim), allocatable :: kla(:), klo(:,:), ks0(:,:), kmask(:), row_offsets(:)
   logical, allocatable :: ldmask(:)
   real(kind=jprb) :: pi, p4jp, pundef
   real(kind=jprb), allocatable :: pbuf_ext(:), pmask(:,:), prow(:,:)
@@ -348,12 +339,13 @@ subroutine fullpos_horizontal_halo_batch_c(nlat, nsrc_points, nfields, ntarget_p
   enddo
   kfields = nfields
   kfldbuf = kfields
-  allocate(pbuf_ext(total_ext * kfields))
+  allocate(pbuf_ext(total_ext * kfields), row_offsets(nlat))
   do fld = 1, kfields
     offset_src = 0
     offset_ext = (fld - 1) * total_ext
     do j = 1, nlat
       n = nloen(j)
+      if (fld == 1) row_offsets(j) = offset_ext
       do col = 1, kslw
         pbuf_ext(offset_ext + col) = values(offset_src + mod(n - kslw + col - 1, n) + 1, fld)
       enddo
@@ -375,7 +367,7 @@ subroutine fullpos_horizontal_halo_batch_c(nlat, nsrc_points, nfields, ntarget_p
       if (row < 1) row = 1
       if (row > nlat) row = nlat
       lon0 = mod(klo(j,slot), nloen(row))
-      ks0(j,slot) = row_offset_halo(nloen, nlat, row, kslw) + kslw + lon0 + 1
+      ks0(j,slot) = row_offsets(row) + kslw + lon0 + 1
     enddo
   enddo
 
@@ -387,6 +379,7 @@ subroutine fullpos_horizontal_halo_batch_c(nlat, nsrc_points, nfields, ntarget_p
   kmask = 1
   ldmask = .false.
   pmask = 1.0_jprb
+  prow = pundef
 
   if (use_near /= 0) then
     call fpnear(kaslb1, kslw, kfields, kmasks, kgpst, kgpend, kproma, kfldbuf, &
@@ -397,17 +390,6 @@ subroutine fullpos_horizontal_halo_batch_c(nlat, nsrc_points, nfields, ntarget_p
   endif
   output = prow
 
-contains
-  integer(kind=jpim) function row_offset_halo(kloen_local, nlat_local, row, halo)
-    integer(c_int), intent(in) :: kloen_local(nlat_local)
-    integer(c_int), intent(in) :: nlat_local
-    integer(kind=jpim), intent(in) :: row, halo
-    integer(kind=jpim) :: jj
-    row_offset_halo = 0
-    do jj = 1, row - 1
-      row_offset_halo = row_offset_halo + kloen_local(jj) + 2 * halo
-    enddo
-  end function row_offset_halo
 end subroutine fullpos_horizontal_halo_batch_c
 
 
@@ -427,7 +409,7 @@ subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl
   integer(kind=jpim) :: kdgsa, kdgen, kfrstloff, kproma, kend, kfprow, kbinl_suhow1
   integer(kind=jpim) :: j, col, n, total_ext, offset_src, offset_ext
   integer(kind=jpim), allocatable :: kla(:), klon(:), klonn(:), klos(:), kloss(:)
-  integer(kind=jpim), allocatable :: kl0(:,:), kbox(:), kder(:), kdmp(:)
+  integer(kind=jpim), allocatable :: kl0(:,:), kbox(:), kder(:), kdmp(:), row_offsets(:)
   integer(kind=jpim) :: kgpst, kgpend, kfields, kfldbuf, kaslb1
   logical :: ldml
   logical :: ldnrst(1), ldmask(1), ldmono(1)
@@ -517,11 +499,12 @@ subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl
   do j = 1, nlat
     total_ext = total_ext + nloen(j) + 3
   enddo
-  allocate(pbuf_ext(total_ext))
+  allocate(pbuf_ext(total_ext), row_offsets(nlat))
   offset_src = 0
   offset_ext = 0
   do j = 1, nlat
     n = nloen(j)
+    row_offsets(j) = offset_ext
     ! One western halo point, the native row, and two eastern halo points.
     ! FPINT12 reads KL0, KL0+1, KL0+2, and KL0+3 on each row.
     pbuf_ext(offset_ext + 1) = values(offset_src + n)
@@ -535,10 +518,10 @@ subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl
   enddo
 
   do j = 1, kproma
-    kl0(j,1) = row_offset_ext(nloen, nlat, kla(j)-1) + mod(klonn(j), nloen(kla(j)-1)) + 1
-    kl0(j,2) = row_offset_ext(nloen, nlat, kla(j)  ) + mod(klon(j),  nloen(kla(j)))   + 1
-    kl0(j,3) = row_offset_ext(nloen, nlat, kla(j)+1) + mod(klos(j),  nloen(kla(j)+1)) + 1
-    kl0(j,4) = row_offset_ext(nloen, nlat, kla(j)+2) + mod(kloss(j), nloen(kla(j)+2)) + 1
+    kl0(j,1) = row_offsets(kla(j)-1) + mod(klonn(j), nloen(kla(j)-1)) + 1
+    kl0(j,2) = row_offsets(kla(j)  ) + mod(klon(j),  nloen(kla(j)))   + 1
+    kl0(j,3) = row_offsets(kla(j)+1) + mod(klos(j),  nloen(kla(j)+1)) + 1
+    kl0(j,4) = row_offsets(kla(j)+2) + mod(kloss(j), nloen(kla(j)+2)) + 1
   enddo
 
   allocate(pwxy(kproma,12))
@@ -574,17 +557,6 @@ subroutine fullpos_horizontal_regular_c(nlat, nsrc_points, ntarget_points, kbinl
   endif
   output = prow(:,1)
 
-contains
-  integer(kind=jpim) function row_offset_ext(kloen_local, nlat_local, row)
-    integer(c_int), intent(in) :: kloen_local(nlat_local)
-    integer(c_int), intent(in) :: nlat_local
-    integer(kind=jpim), intent(in) :: row
-    integer(kind=jpim) :: jj
-    row_offset_ext = 0
-    do jj = 1, row - 1
-      row_offset_ext = row_offset_ext + kloen_local(jj) + 3
-    enddo
-  end function row_offset_ext
 end subroutine fullpos_horizontal_regular_c
 
 
@@ -605,7 +577,7 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   integer(kind=jpim) :: kdgsa, kdgen, kfrstloff, kproma, kend, kfprow, kbinl_suhow1
   integer(kind=jpim) :: fld, j, col, n, total_ext, offset_src, offset_ext
   integer(kind=jpim), allocatable :: kla(:), klon(:), klonn(:), klos(:), kloss(:)
-  integer(kind=jpim), allocatable :: kl0(:,:), kbox(:), kder(:), kdmp(:)
+  integer(kind=jpim), allocatable :: kl0(:,:), kbox(:), kder(:), kdmp(:), row_offsets(:)
   integer(kind=jpim) :: kgpst, kgpend, kfields, kfldbuf, kaslb1
   logical :: ldml
   logical, allocatable :: ldnrst(:), ldmask(:), ldmono(:)
@@ -695,12 +667,13 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   enddo
   kfields = nfields
   kfldbuf = kfields
-  allocate(pbuf_ext(total_ext * kfields))
+  allocate(pbuf_ext(total_ext * kfields), row_offsets(nlat))
   do fld = 1, kfields
     offset_src = 0
     offset_ext = (fld - 1) * total_ext
     do j = 1, nlat
       n = nloen(j)
+      if (fld == 1) row_offsets(j) = offset_ext
       pbuf_ext(offset_ext + 1) = values(offset_src + n, fld)
       do col = 1, n
         pbuf_ext(offset_ext + col + 1) = values(offset_src + col, fld)
@@ -713,10 +686,10 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   enddo
 
   do j = 1, kproma
-    kl0(j,1) = row_offset_ext(nloen, nlat, kla(j)-1) + mod(klonn(j), nloen(kla(j)-1)) + 1
-    kl0(j,2) = row_offset_ext(nloen, nlat, kla(j)  ) + mod(klon(j),  nloen(kla(j)))   + 1
-    kl0(j,3) = row_offset_ext(nloen, nlat, kla(j)+1) + mod(klos(j),  nloen(kla(j)+1)) + 1
-    kl0(j,4) = row_offset_ext(nloen, nlat, kla(j)+2) + mod(kloss(j), nloen(kla(j)+2)) + 1
+    kl0(j,1) = row_offsets(kla(j)-1) + mod(klonn(j), nloen(kla(j)-1)) + 1
+    kl0(j,2) = row_offsets(kla(j)  ) + mod(klon(j),  nloen(kla(j)))   + 1
+    kl0(j,3) = row_offsets(kla(j)+1) + mod(klos(j),  nloen(kla(j)+1)) + 1
+    kl0(j,4) = row_offsets(kla(j)+2) + mod(kloss(j), nloen(kla(j)+2)) + 1
   enddo
 
   allocate(pwxy(kproma,12))
@@ -751,15 +724,4 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   endif
   output = prow
 
-contains
-  integer(kind=jpim) function row_offset_ext(kloen_local, nlat_local, row)
-    integer(c_int), intent(in) :: kloen_local(nlat_local)
-    integer(c_int), intent(in) :: nlat_local
-    integer(kind=jpim), intent(in) :: row
-    integer(kind=jpim) :: jj
-    row_offset_ext = 0
-    do jj = 1, row - 1
-      row_offset_ext = row_offset_ext + kloen_local(jj) + 3
-    enddo
-  end function row_offset_ext
 end subroutine fullpos_horizontal_regular_batch_c

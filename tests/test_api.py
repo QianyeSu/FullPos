@@ -185,10 +185,10 @@ def test_regrid_rejects_bad_reduced_grid_metadata() -> None:
         attrs={
             "GRIB_gridType": "reduced_gg",
             "GRIB_N": 4,
-            "GRIB_pl": np.full(8, 16),
+            "GRIB_pl": np.array([16, 16, 16, 16, 16, 16, 16, 15]),
         },
     )
-    with pytest.raises(ValueError, match="not an ECMWF octahedral O-grid"):
+    with pytest.raises(ValueError, match="symmetric"):
         regrid(obj, target_grid="O4")
 
 
