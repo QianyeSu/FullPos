@@ -11,6 +11,14 @@
 #include "ectrans/transi.h"
 
 static int native_initialized = 0;
+static struct Trans_t cached_src_trans;
+static struct Trans_t cached_dst_trans;
+static int cached_src_ready = 0;
+static int cached_dst_ready = 0;
+static int cached_src_trunc = -1;
+static int cached_dst_trunc = -1;
+static PyArrayObject *cached_src_pl = NULL;
+static PyArrayObject *cached_dst_pl = NULL;
 
 extern void fullpos_fpint4_c(
     const int *kaslb1,
@@ -177,6 +185,90 @@ fail:
     return -1;
 }
 
+static int reset_cached_transform(
+    struct Trans_t *trans,
+    int *ready,
+    int *trunc,
+    PyArrayObject **pl_cache)
+{
+    if (*ready) {
+        int err = trans_delete(trans);
+        if (err != TRANS_SUCCESS) {
+            return set_trans_error("trans_delete()", err);
+        }
+        *ready = 0;
+    }
+    Py_CLEAR(*pl_cache);
+    *trunc = -1;
+    memset(trans, 0, sizeof(*trans));
+    return 0;
+}
+
+static int ensure_cached_transform(
+    struct Trans_t *trans,
+    int *ready,
+    int *cached_trunc,
+    PyArrayObject **pl_cache,
+    PyArrayObject *pl,
+    int trunc)
+{
+    int same_grid = 0;
+    if (*ready && *pl_cache != NULL && *cached_trunc == trunc) {
+        same_grid = PyArray_CompareLists(
+            PyArray_DIMS(*pl_cache),
+            PyArray_DIMS(pl),
+            PyArray_NDIM(pl)
+        ) && PyArray_CompareLists(
+            PyArray_STRIDES(*pl_cache),
+            PyArray_STRIDES(pl),
+            PyArray_NDIM(pl)
+        ) && PyArray_EquivTypenums(PyArray_TYPE(*pl_cache), PyArray_TYPE(pl));
+        if (same_grid) {
+            same_grid = memcmp(
+                PyArray_DATA(*pl_cache),
+                PyArray_DATA(pl),
+                PyArray_NBYTES(pl)
+            ) == 0;
+        }
+    }
+    if (same_grid) {
+        return 0;
+    }
+    if (reset_cached_transform(trans, ready, cached_trunc, pl_cache) != 0) {
+        return -1;
+    }
+    if (setup_transform(trans, pl, trunc) != 0) {
+        return -1;
+    }
+    *ready = 1;
+    *cached_trunc = trunc;
+    Py_INCREF(pl);
+    *pl_cache = pl;
+    return 0;
+}
+
+static int can_use_global_grid_fast_path(
+    const struct Trans_t *src,
+    const struct Trans_t *dst)
+{
+    return src->nproc == 1 && dst->nproc == 1;
+}
+
+static int can_use_direct_spectral_fast_path(
+    const struct Trans_t *src,
+    const struct Trans_t *dst)
+{
+    return src->nproc == 1 &&
+           dst->nproc == 1 &&
+           src->nspec2 == dst->nspec2;
+}
+
+static int env_flag_enabled(const char *name)
+{
+    const char *value = getenv(name);
+    return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
 static int ensure_native_initialized(void)
 {
     if (native_initialized) {
@@ -206,17 +298,24 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
     PyArrayObject *source_pl = NULL;
     PyArrayObject *target_pl = NULL;
     PyArrayObject *out = NULL;
+    struct Trans_t src_local;
+    struct Trans_t dst_local;
+    struct Trans_t *src_trans = NULL;
+    struct Trans_t *dst_trans = NULL;
+    int src_local_ready = 0;
+    int dst_local_ready = 0;
 
-    struct Trans_t src;
-    struct Trans_t dst;
-    int src_ready = 0;
-    int dst_ready = 0;
     int *nfrom = NULL;
     int *nto = NULL;
 
     int input_ndim = 0;
     int nfld = 1;
     npy_intp input_points = 0;
+    int use_global_grid_fast_path = 0;
+    int use_direct_spectral_fast_path = 0;
+    int disable_cache = 0;
+    int disable_global_fast_path = 0;
+    int disable_direct_spectral_fast_path = 0;
 
     double *rgp_src = NULL;
     double *rspec_src = NULL;
@@ -225,9 +324,8 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
     double *rgp_dst = NULL;
 
     (void)self;
-    memset(&src, 0, sizeof(src));
-    memset(&dst, 0, sizeof(dst));
-
+    memset(&src_local, 0, sizeof(src_local));
+    memset(&dst_local, 0, sizeof(dst_local));
     if (!PyArg_ParseTupleAndKeywords(
             args, kwargs, "OOOi", kwlist, &values_obj, &source_pl_obj, &target_pl_obj, &trunc)) {
         return NULL;
@@ -266,33 +364,89 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
         goto fail;
     }
 
-    if (setup_transform(&src, source_pl, trunc) != 0) {
-        goto fail;
-    }
-    src_ready = 1;
-    if (setup_transform(&dst, target_pl, trunc) != 0) {
-        goto fail;
-    }
-    dst_ready = 1;
+    disable_cache = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_CACHE");
+    disable_global_fast_path = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_GLOBAL_FASTPATH");
+    disable_direct_spectral_fast_path =
+        env_flag_enabled("FULLPOS_ECTRANS_DISABLE_DIRECT_SPECTRAL_FASTPATH");
 
-    if ((size_t)input_points != (size_t)src.ngptotg) {
+    if (disable_cache) {
+        if (setup_transform(&src_local, source_pl, trunc) != 0) {
+            goto fail;
+        }
+        src_local_ready = 1;
+        if (setup_transform(&dst_local, target_pl, trunc) != 0) {
+            goto fail;
+        }
+        dst_local_ready = 1;
+        src_trans = &src_local;
+        dst_trans = &dst_local;
+    } else {
+        if (ensure_cached_transform(
+                &cached_src_trans,
+                &cached_src_ready,
+                &cached_src_trunc,
+                &cached_src_pl,
+                source_pl,
+                trunc) != 0) {
+            goto fail;
+        }
+        if (ensure_cached_transform(
+                &cached_dst_trans,
+                &cached_dst_ready,
+                &cached_dst_trunc,
+                &cached_dst_pl,
+                target_pl,
+                trunc) != 0) {
+            goto fail;
+        }
+        src_trans = &cached_src_trans;
+        dst_trans = &cached_dst_trans;
+    }
+
+    if ((size_t)input_points != (size_t)src_trans->ngptotg) {
         PyErr_Format(
             PyExc_ValueError,
             "values has %zd points per field, source grid expects %d",
             input_points,
-            src.ngptotg);
+            src_trans->ngptotg);
         goto fail;
     }
 
-    rgp_src = (double *)calloc((size_t)nfld * (size_t)src.ngptot, sizeof(double));
-    rspec_src = (double *)calloc((size_t)nfld * (size_t)src.nspec2, sizeof(double));
-    rspec_global = (double *)calloc((size_t)nfld * (size_t)src.nspec2g, sizeof(double));
-    rspec_dst = (double *)calloc((size_t)nfld * (size_t)dst.nspec2, sizeof(double));
-    rgp_dst = (double *)calloc((size_t)nfld * (size_t)dst.ngptot, sizeof(double));
+    use_global_grid_fast_path =
+        !disable_global_fast_path && can_use_global_grid_fast_path(src_trans, dst_trans);
+    use_direct_spectral_fast_path =
+        !disable_direct_spectral_fast_path &&
+        can_use_direct_spectral_fast_path(src_trans, dst_trans);
+
+    if (!use_global_grid_fast_path) {
+        rgp_src = (double *)calloc((size_t)nfld * (size_t)src_trans->ngptot, sizeof(double));
+        rgp_dst = (double *)calloc((size_t)nfld * (size_t)dst_trans->ngptot, sizeof(double));
+    }
+    rspec_src = (double *)calloc((size_t)nfld * (size_t)src_trans->nspec2, sizeof(double));
+    if (!use_direct_spectral_fast_path) {
+        rspec_global = (double *)calloc((size_t)nfld * (size_t)src_trans->nspec2g, sizeof(double));
+        rspec_dst = (double *)calloc((size_t)nfld * (size_t)dst_trans->nspec2, sizeof(double));
+    }
     nfrom = (int *)malloc((size_t)nfld * sizeof(int));
     nto = (int *)malloc((size_t)nfld * sizeof(int));
-    if (!rgp_src || !rspec_src || !rspec_global || !rspec_dst || !rgp_dst || !nfrom || !nto) {
-        PyErr_NoMemory();
+    if ((!use_global_grid_fast_path && (!rgp_src || !rgp_dst)) ||
+        !rspec_src ||
+        (!use_direct_spectral_fast_path && (!rspec_global || !rspec_dst)) ||
+        !nfrom ||
+        !nto) {
+        PyErr_Format(
+            PyExc_MemoryError,
+            "regrid allocation failed: nfld=%d src_ngptot=%d dst_ngptot=%d "
+            "src_nspec2=%d src_nspec2g=%d dst_nspec2=%d "
+            "use_global=%d use_direct=%d",
+            nfld,
+            src_trans->ngptot,
+            dst_trans->ngptot,
+            src_trans->nspec2,
+            src_trans->nspec2g,
+            dst_trans->nspec2,
+            use_global_grid_fast_path,
+            use_direct_spectral_fast_path);
         goto fail;
     }
     for (int i = 0; i < nfld; ++i) {
@@ -301,60 +455,79 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
     }
 
     {
-        struct DistGrid_t distgrid = new_distgrid(&src);
-        distgrid.nfrom = nfrom;
-        distgrid.rgpg = (const double *)PyArray_DATA(values);
-        distgrid.rgp = rgp_src;
-        distgrid.nfld = nfld;
-        CHECK_TRANS(trans_distgrid(&distgrid));
-    }
-
-    {
-        struct DirTrans_t dirtrans = new_dirtrans(&src);
+        struct DirTrans_t dirtrans = new_dirtrans(src_trans);
         dirtrans.nscalar = nfld;
-        dirtrans.rgp = rgp_src;
+        if (use_global_grid_fast_path) {
+            dirtrans.lglobal = 1;
+            dirtrans.nproma = src_trans->ngptotg;
+            dirtrans.ngpblks = 1;
+            dirtrans.rgp = (const double *)PyArray_DATA(values);
+        } else {
+            struct DistGrid_t distgrid = new_distgrid(src_trans);
+            distgrid.nfrom = nfrom;
+            distgrid.rgpg = (const double *)PyArray_DATA(values);
+            distgrid.rgp = rgp_src;
+            distgrid.nfld = nfld;
+            CHECK_TRANS(trans_distgrid(&distgrid));
+            dirtrans.rgp = rgp_src;
+        }
         dirtrans.rspscalar = rspec_src;
         CHECK_TRANS(trans_dirtrans(&dirtrans));
     }
 
-    {
-        struct GathSpec_t gathspec = new_gathspec(&src);
+    if (!use_direct_spectral_fast_path) {
+        struct GathSpec_t gathspec = new_gathspec(src_trans);
         gathspec.rspec = rspec_src;
         gathspec.rspecg = rspec_global;
         gathspec.nfld = nfld;
         gathspec.nto = nto;
         CHECK_TRANS(trans_gathspec(&gathspec));
+
+        {
+            struct DistSpec_t distspec = new_distspec(dst_trans);
+            distspec.nfrom = nfrom;
+            distspec.rspecg = rspec_global;
+            distspec.rspec = rspec_dst;
+            distspec.nfld = nfld;
+            CHECK_TRANS(trans_distspec(&distspec));
+        }
     }
 
     {
-        struct DistSpec_t distspec = new_distspec(&dst);
-        distspec.nfrom = nfrom;
-        distspec.rspecg = rspec_global;
-        distspec.rspec = rspec_dst;
-        distspec.nfld = nfld;
-        CHECK_TRANS(trans_distspec(&distspec));
-    }
-
-    {
-        struct InvTrans_t invtrans = new_invtrans(&dst);
-        invtrans.nscalar = nfld;
-        invtrans.rspscalar = rspec_dst;
-        invtrans.rgp = rgp_dst;
-        CHECK_TRANS(trans_invtrans(&invtrans));
-    }
-
-    {
-        npy_intp dims[2] = {(npy_intp)nfld, (npy_intp)dst.ngptotg};
+        npy_intp dims[2] = {(npy_intp)nfld, (npy_intp)dst_trans->ngptotg};
         if (input_ndim == 1) {
             out = (PyArrayObject *)PyArray_SimpleNew(1, &dims[1], NPY_DOUBLE);
         } else {
             out = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
         }
         if (!out) {
+            PyErr_Format(
+                PyExc_MemoryError,
+                "output allocation failed: nfld=%d dst_ngptotg=%d input_ndim=%d",
+                nfld,
+                dst_trans->ngptotg,
+                input_ndim);
             goto fail;
         }
+    }
 
-        struct GathGrid_t gathgrid = new_gathgrid(&dst);
+    {
+        struct InvTrans_t invtrans = new_invtrans(dst_trans);
+        invtrans.nscalar = nfld;
+        invtrans.rspscalar = use_direct_spectral_fast_path ? rspec_src : rspec_dst;
+        if (use_global_grid_fast_path) {
+            invtrans.lglobal = 1;
+            invtrans.nproma = dst_trans->ngptotg;
+            invtrans.ngpblks = 1;
+            invtrans.rgp = (double *)PyArray_DATA(out);
+        } else {
+            invtrans.rgp = rgp_dst;
+        }
+        CHECK_TRANS(trans_invtrans(&invtrans));
+    }
+
+    if (!use_global_grid_fast_path) {
+        struct GathGrid_t gathgrid = new_gathgrid(dst_trans);
         gathgrid.rgp = rgp_dst;
         gathgrid.rgpg = (double *)PyArray_DATA(out);
         gathgrid.nfld = nfld;
@@ -362,11 +535,6 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
         CHECK_TRANS(trans_gathgrid(&gathgrid));
     }
 
-    CHECK_TRANS(trans_delete(&src));
-    src_ready = 0;
-    CHECK_TRANS(trans_delete(&dst));
-    dst_ready = 0;
-
     free(rgp_src);
     free(rspec_src);
     free(rspec_global);
@@ -374,18 +542,18 @@ static PyObject *ectrans_regrid(PyObject *self, PyObject *args, PyObject *kwargs
     free(rgp_dst);
     free(nfrom);
     free(nto);
+    if (src_local_ready) {
+        trans_delete(&src_local);
+    }
+    if (dst_local_ready) {
+        trans_delete(&dst_local);
+    }
     Py_XDECREF(values);
     Py_XDECREF(source_pl);
     Py_XDECREF(target_pl);
     return (PyObject *)out;
 
 fail:
-    if (src_ready) {
-        trans_delete(&src);
-    }
-    if (dst_ready) {
-        trans_delete(&dst);
-    }
     free(rgp_src);
     free(rspec_src);
     free(rspec_global);
@@ -393,6 +561,12 @@ fail:
     free(rgp_dst);
     free(nfrom);
     free(nto);
+    if (src_local_ready) {
+        trans_delete(&src_local);
+    }
+    if (dst_local_ready) {
+        trans_delete(&dst_local);
+    }
     Py_XDECREF(out);
     Py_XDECREF(values);
     Py_XDECREF(source_pl);
@@ -1695,8 +1869,12 @@ static struct PyModuleDef EctransModule = {
     PyModuleDef_HEAD_INIT,
     "_ectrans",
     NULL,
-    -1,
+    0,
     EctransMethods,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
 };
 
 PyMODINIT_FUNC PyInit__ectrans(void)

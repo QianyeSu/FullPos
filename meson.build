@@ -93,6 +93,8 @@ fullpos_fortran_args = [
 
 if fortran_compiler.get_id() == 'gcc'
   fullpos_fortran_args += ['-ffree-line-length-none']
+  fullpos_fortran_args += ['-fopenmp']
+  ectrans_link_args += ['-fopenmp']
 endif
 
 py.extension_module(
