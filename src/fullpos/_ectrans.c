@@ -214,15 +214,18 @@ static int ensure_cached_transform(
 {
     int same_grid = 0;
     if (*ready && *pl_cache != NULL && *cached_trunc == trunc) {
-        same_grid = PyArray_CompareLists(
-            PyArray_DIMS(*pl_cache),
-            PyArray_DIMS(pl),
-            PyArray_NDIM(pl)
-        ) && PyArray_CompareLists(
-            PyArray_STRIDES(*pl_cache),
-            PyArray_STRIDES(pl),
-            PyArray_NDIM(pl)
-        ) && PyArray_EquivTypenums(PyArray_TYPE(*pl_cache), PyArray_TYPE(pl));
+        same_grid =
+            PyArray_NDIM(*pl_cache) == PyArray_NDIM(pl) &&
+            PyArray_NBYTES(*pl_cache) == PyArray_NBYTES(pl) &&
+            PyArray_CompareLists(
+                PyArray_DIMS(*pl_cache),
+                PyArray_DIMS(pl),
+                PyArray_NDIM(pl)
+            ) && PyArray_CompareLists(
+                PyArray_STRIDES(*pl_cache),
+                PyArray_STRIDES(pl),
+                PyArray_NDIM(pl)
+            ) && PyArray_EquivTypenums(PyArray_TYPE(*pl_cache), PyArray_TYPE(pl));
         if (same_grid) {
             same_grid = memcmp(
                 PyArray_DATA(*pl_cache),
@@ -267,6 +270,30 @@ static int env_flag_enabled(const char *name)
 {
     const char *value = getenv(name);
     return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
+}
+
+static void clear_global_transform_cache(void)
+{
+    if (cached_src_ready) {
+        trans_delete(&cached_src_trans);
+        cached_src_ready = 0;
+    }
+    if (cached_dst_ready) {
+        trans_delete(&cached_dst_trans);
+        cached_dst_ready = 0;
+    }
+    Py_CLEAR(cached_src_pl);
+    Py_CLEAR(cached_dst_pl);
+    cached_src_trunc = -1;
+    cached_dst_trunc = -1;
+    memset(&cached_src_trans, 0, sizeof(cached_src_trans));
+    memset(&cached_dst_trans, 0, sizeof(cached_dst_trans));
+}
+
+static void ectrans_module_free(void *module)
+{
+    (void)module;
+    clear_global_transform_cache();
 }
 
 static int ensure_native_initialized(void)
@@ -1874,7 +1901,7 @@ static struct PyModuleDef EctransModule = {
     NULL,
     NULL,
     NULL,
-    NULL,
+    ectrans_module_free,
 };
 
 PyMODINIT_FUNC PyInit__ectrans(void)
