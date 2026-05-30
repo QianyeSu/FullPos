@@ -8,12 +8,13 @@ from fullpos import (
     average_interpolate,
     bilinear_interpolate,
     horizontal_interpolate,
+    land_sea_mask_to_grid,
+    masked_surface_interpolate,
     nearest_interpolate,
     quadratic12_interpolate,
     vertical_capabilities,
     vertical_interpolate,
 )
-from fullpos.errors import FullposNotImplementedError
 from fullpos.grids import gaussian_latitudes, octahedral_pl, regular_longitudes
 
 
@@ -386,7 +387,33 @@ def test_horizontal_interpolate_dataset_skips_non_horizontal_variables() -> None
     np.testing.assert_allclose(out["t"].values, base[2:-2], atol=1.0e-12)
 
 
-def test_masked_horizontal_interpolation_is_still_unimplemented() -> None:
+def test_source_mask_is_supported_for_native_average_and_outputs_nan() -> None:
+    lats = gaussian_latitudes(8)
+    lons = regular_longitudes(16)
+    values = np.arange(8 * 16, dtype=np.float64).reshape(8, 16)
+    obj = xr.DataArray(
+        values,
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
+    source_mask = np.ones_like(values, dtype=bool)
+    source_mask[3, 0] = False
+    source_mask[3, 1] = False
+    source_mask[4, 0] = False
+    source_mask[4, 1] = False
+
+    out = horizontal_interpolate(
+        obj,
+        target_lats=np.array([lats[3]]),
+        target_lons=np.array([lons[0]]),
+        method="average",
+        source_mask=source_mask,
+    )
+
+    assert np.isnan(out.values[0])
+
+
+def test_target_mask_forces_masked_output_to_nan() -> None:
     lats = gaussian_latitudes(8)
     lons = regular_longitudes(16)
     obj = xr.DataArray(
@@ -395,13 +422,83 @@ def test_masked_horizontal_interpolation_is_still_unimplemented() -> None:
         coords={"latitude": lats, "longitude": lons},
     )
 
-    with pytest.raises(FullposNotImplementedError):
+    out = horizontal_interpolate(
+        obj,
+        target_lats=np.array([lats[3], lats[3]]),
+        target_lons=np.array([lons[0], lons[1]]),
+        method="nearest",
+        source_mask=np.ones_like(obj.values, dtype=bool),
+        target_mask=np.array([True, False]),
+    )
+
+    assert np.isfinite(out.values[0])
+    assert np.isnan(out.values[1])
+
+
+def test_source_mask_is_rejected_for_fpint4_fpint12_paths() -> None:
+    lats = gaussian_latitudes(8)
+    lons = regular_longitudes(16)
+    obj = xr.DataArray(
+        np.ones((8, 16), dtype=np.float64),
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+    )
+
+    with pytest.raises(ValueError, match="source_mask"):
         horizontal_interpolate(
             obj,
             target_lats=np.array([lats[3]]),
             target_lons=np.array([lons[0]]),
             source_mask=np.ones_like(obj.values, dtype=bool),
         )
+
+
+def test_land_sea_mask_to_grid_samples_regular_ll_mask_to_packed_o_grid() -> None:
+    lsm = xr.DataArray(
+        np.array([[1.0, 0.0], [1.0, 0.0]]),
+        dims=("latitude", "longitude"),
+        coords={"latitude": [45.0, -45.0], "longitude": [0.0, 180.0]},
+    )
+
+    sea = land_sea_mask_to_grid(lsm, target_grid="O2", kind="sea")
+    land = land_sea_mask_to_grid(lsm, target_grid="O2", kind="land")
+
+    assert sea.dims == ("values",)
+    assert sea.size == int(octahedral_pl(2).sum())
+    assert bool(sea.any())
+    assert bool(land.any())
+    np.testing.assert_array_equal(sea.values, ~land.values)
+
+
+def test_masked_surface_interpolate_wraps_land_sea_masks() -> None:
+    lats = gaussian_latitudes(8)
+    lons = regular_longitudes(16)
+    values = np.full((8, 16), 280.0, dtype=np.float64)
+    values[3:5, 0:2] = np.nan
+    field = xr.DataArray(
+        values,
+        dims=("latitude", "longitude"),
+        coords={"latitude": lats, "longitude": lons},
+        name="sst",
+    )
+    lsm = xr.DataArray(
+        np.array([[1.0, 0.0], [1.0, 0.0]]),
+        dims=("latitude", "longitude"),
+        coords={"latitude": [45.0, -45.0], "longitude": [0.0, 180.0]},
+    )
+
+    out = masked_surface_interpolate(
+        field,
+        land_sea_mask=lsm,
+        source_grid="F4",
+        target_grid="F4",
+        method="average",
+    )
+
+    assert out.name == "sst"
+    assert out.attrs["fullpos_surface_mask_kind"] == "sea"
+    assert np.isnan(out.values).any()
+    assert np.isfinite(out.values).any()
 
 
 def test_horizontal_interpolate_validates_bad_xarray_chunks() -> None:

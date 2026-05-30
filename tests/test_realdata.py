@@ -7,7 +7,13 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from fullpos import horizontal_interpolate, regrid, spectral_filter, vertical_interpolate
+from fullpos import (
+    horizontal_interpolate,
+    masked_surface_interpolate,
+    regrid,
+    spectral_filter,
+    vertical_interpolate,
+)
 from fullpos._vertical.pressure import (
     _infer_reference_pressure_from_ak,
     _midlevel_coefficients_from_half_levels,
@@ -27,6 +33,9 @@ REAL_SURFACE_O96_MATCHING = Path(
 )
 REAL_OROGRAPHY_O96 = Path(
     r"L:\ERA5_Complete\ERA5_Reanalysis_surface_geopotential_O96.grib"
+)
+REAL_LSM = Path(
+    r"L:\ERA5_Complete\ERA5_Land_Sea_Mask.grib"
 )
 REAL_MODEL_O96 = Path(
     r"L:\ERA5_Complete\Reanalysis\model_level\ERA5_Reanalysis_19781201_6hourly_ml1-137_O96.grib2"
@@ -136,6 +145,54 @@ def test_real_o96_sst_masked_regridding_has_finite_sea_points() -> None:
     assert out.shape == (320, 640)
     assert np.isfinite(out.values).sum() > np.isfinite(field.values).sum()
     assert np.isnan(out.values).any()
+
+
+@pytest.mark.skipif(
+    not (REAL_SURFACE_O96_MATCHING.exists() and REAL_LSM.exists()),
+    reason="local ERA5 O96 SST and land-sea-mask GRIB samples not found",
+)
+def test_real_o96_sst_land_sea_masked_average_to_f160_preserves_sea_only_output() -> None:
+    surface = xr.open_dataset(
+        REAL_SURFACE_O96_MATCHING,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "sst", "typeOfLevel": "surface"},
+            "read_keys": ["gridType", "N", "pl", "numberOfPoints", "bitmapPresent"],
+        },
+    )
+    lsm = xr.open_dataset(
+        REAL_LSM,
+        engine="cfgrib",
+        backend_kwargs={
+            "indexpath": "",
+            "filter_by_keys": {"shortName": "lsm"},
+            "read_keys": ["gridType", "N", "numberOfPoints"],
+        },
+    )
+    field = surface["sst"].isel(time=0) if "time" in surface["sst"].dims else surface["sst"]
+    land_sea_mask = lsm["lsm"].isel(time=0) if "time" in lsm["lsm"].dims else lsm["lsm"]
+
+    out = masked_surface_interpolate(
+        field,
+        land_sea_mask=land_sea_mask,
+        source_grid="O96",
+        target_grid="F160",
+        kind="sea",
+        method="average",
+    )
+
+    assert out.dims == ("latitude", "longitude")
+    assert out.shape == (320, 640)
+    assert out.attrs["fullpos_surface_mask_kind"] == "sea"
+    assert out.attrs["fullpos_surface_mask_source_grid"] == "O96"
+    assert out.attrs["fullpos_surface_mask_target_grid"] == "F160"
+    assert np.isfinite(out.values).sum() > 0
+    assert np.isnan(out.values).sum() > 0
+    assert not np.any(np.abs(out.values[np.isfinite(out.values)]) >= 1.0e10)
+    assert 250.0 < float(np.nanmin(out.values)) < 320.0
+    assert 250.0 < float(np.nanmean(out.values)) < 320.0
+    assert 250.0 < float(np.nanmax(out.values)) < 320.0
 
 
 @pytest.mark.skipif(not REAL_MODEL_O96.exists(), reason="local ERA5 O96 model-level GRIB sample not found")

@@ -3,7 +3,6 @@ from __future__ import annotations
 import numpy as np
 import xarray as xr
 
-from ..errors import FullposNotImplementedError
 from ..grids import GaussianGrid, gaussian_latitudes, parse_grid, regular_longitudes
 from ..metadata import append_history, format_regrid_history
 from .kernels import (
@@ -27,6 +26,7 @@ def horizontal_interpolate(
     axis: int | tuple[int, int] | None = None,
     missing_value=None,
     source_mask=None,
+    target_mask=None,
     average_radius: int = 1,
     chunks: dict[str, int] | None = None,
     keep_attrs: bool = True,
@@ -53,13 +53,14 @@ def horizontal_interpolate(
     regular-row NumPy arrays should be wrapped as xarray objects with latitude
     and longitude coordinates.
 
-    The packed reduced path is an unmasked native interpolation path for finite
-    fields such as model-level ``t/u/v/q`` or surface fields without GRIB
-    bitmaps. It is not the complete FULLPOS land/sea-mask workflow for SST,
-    sea ice, or other bitmap/missing-value surface fields. Passing
-    ``source_mask`` currently raises ``FullposNotImplementedError`` because
-    native mask-aware horizontal interpolation has not been wired into the
-    public API yet.
+    ``source_mask`` can be supplied with ``method="average"`` or
+    ``method="nearest"``. It marks valid source points with ``True`` and masks
+    invalid source points before the native FULLPOS ``FPAVG``/``FPNEAR`` call.
+    For an ERA5 land-sea mask, SST normally uses ``source_mask=(lsm < 0.5)``
+    and land fields use ``source_mask=(lsm >= 0.5)``.
+    ``target_mask`` can be supplied with the target horizontal shape to force
+    invalid output points, for example target land points for SST, to
+    ``np.nan``.
 
     ``shape_preserving=True`` exposes the native OpenIFS/FULLPOS ``FPINT12``
     monotonic branch. It is only valid together with ``method="quadratic12"``
@@ -83,11 +84,8 @@ def horizontal_interpolate(
         variables=variables,
         skip_non_horizontal=skip_non_horizontal,
     )
-    _ = missing_value
-    if source_mask is not None:
-        raise FullposNotImplementedError(
-            "native FULLPOS mask-aware horizontal interpolation is not implemented yet"
-        )
+    _validate_source_mask_method(method, source_mask)
+    pundef = _resolve_pundef(missing_value)
     if isinstance(values, xr.Dataset):
         return _horizontal_interpolate_dataset(
             values,
@@ -103,6 +101,9 @@ def horizontal_interpolate(
             shape_preserving=shape_preserving,
             variables=variables,
             skip_non_horizontal=skip_non_horizontal,
+            source_mask=source_mask,
+            target_mask=target_mask,
+            pundef=pundef,
         )
     if isinstance(values, xr.DataArray):
         return _horizontal_interpolate_data_array(
@@ -117,6 +118,9 @@ def horizontal_interpolate(
             keep_attrs=keep_attrs,
             average_radius=average_radius,
             shape_preserving=shape_preserving,
+            source_mask=source_mask,
+            target_mask=target_mask,
+            pundef=pundef,
         )
     return _horizontal_interpolate_numpy(
         values,
@@ -128,14 +132,17 @@ def horizontal_interpolate(
         shape_preserving=shape_preserving,
         axis=axis,
         average_radius=average_radius,
+        source_mask=source_mask,
+        target_mask=target_mask,
+        pundef=pundef,
     )
 
 
 def nearest_interpolate(values, **kwargs) -> np.ndarray:
     """Interpolate using nearest-neighbour selection.
 
-    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
-    requirements and mask-aware interpolation limitations.
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata and
+    source-mask handling.
     """
     return horizontal_interpolate(values, method="nearest", **kwargs)
 
@@ -144,7 +151,7 @@ def bilinear_interpolate(values, **kwargs) -> np.ndarray:
     """Interpolate using 4-point bilinear weights.
 
     See ``horizontal_interpolate`` for packed reduced Gaussian metadata
-    requirements and mask-aware interpolation limitations.
+    requirements.
     """
     return horizontal_interpolate(values, method="bilinear", **kwargs)
 
@@ -153,8 +160,7 @@ def quadratic12_interpolate(values, **kwargs) -> np.ndarray:
     """Interpolate using a 12-point high-order regular-grid stencil.
 
     See ``horizontal_interpolate`` for packed reduced Gaussian metadata
-    requirements, mask-aware interpolation limitations, and the
-    ``shape_preserving`` monotonic option.
+    requirements and the ``shape_preserving`` monotonic option.
     """
     return horizontal_interpolate(values, method="quadratic12", **kwargs)
 
@@ -162,8 +168,8 @@ def quadratic12_interpolate(values, **kwargs) -> np.ndarray:
 def average_interpolate(values, **kwargs) -> np.ndarray:
     """Interpolate using an average over a square source-grid halo.
 
-    See ``horizontal_interpolate`` for packed reduced Gaussian metadata
-    requirements and mask-aware interpolation limitations.
+    See ``horizontal_interpolate`` for packed reduced Gaussian metadata and
+    source-mask handling.
     """
     return horizontal_interpolate(values, method="average", **kwargs)
 
@@ -179,6 +185,9 @@ def _horizontal_interpolate_numpy(
     shape_preserving: bool,
     axis: int | tuple[int, int],
     average_radius: int,
+    source_mask,
+    target_mask,
+    pundef: float,
 ) -> np.ndarray:
     arr = np.asarray(values)
     nloen = _resolve_source_pl(source_pl=source_pl, source_grid=source_grid, attrs=None)
@@ -191,9 +200,17 @@ def _horizontal_interpolate_numpy(
         axis,
     )
     flat = moved.reshape((-1, int(np.prod(source_shape))))
+    flat_mask = _prepare_numpy_source_mask(
+        source_mask,
+        values=arr,
+        source_shape=source_shape,
+        axis=axis,
+        flat_count=flat.shape[0],
+    )
     out = np.empty((flat.shape[0],) + tgt_lats.shape, dtype=np.float64)
     kernel = _select_horizontal_kernel(method)
     for idx, field in enumerate(flat):
+        field = _apply_flat_source_mask(field, None if flat_mask is None else flat_mask[idx], pundef)
         out[idx] = kernel(
             field if nloen is not None else field.reshape(source_shape),
             source_pl=nloen,
@@ -203,7 +220,13 @@ def _horizontal_interpolate_numpy(
             **_regular_kwargs(method, shape_preserving),
             **_halo_kwargs(method, average_radius),
         )
-    result = out.reshape(leading_shape + tgt_lats.shape)
+    result = _finalize_masked_output(
+        out.reshape(leading_shape + tgt_lats.shape),
+        source_mask=source_mask,
+        target_mask=target_mask,
+        target_shape=tgt_lats.shape,
+        pundef=pundef,
+    )
     if original_axes is None:
         return result
     return _move_horizontal_from_end(result, tgt_lats.shape, original_axes, len(source_shape))
@@ -222,6 +245,9 @@ def _horizontal_interpolate_data_array(
     keep_attrs: bool,
     average_radius: int = 1,
     shape_preserving: bool = False,
+    source_mask=None,
+    target_mask=None,
+    pundef: float = 1.0e20,
 ) -> xr.DataArray:
     source = _resolve_xarray_source(
         obj,
@@ -236,12 +262,19 @@ def _horizontal_interpolate_data_array(
     tgt_lats = np.asarray(target_lats, dtype=np.float64)
     tgt_lons = np.asarray(target_lons, dtype=np.float64)
     leading_chunks = _resolve_named_chunks(transposed, leading_dims, chunks)
+    prepared_mask = _prepare_xarray_source_mask(source_mask, transposed, source, leading_dims)
     out_shape = transposed.shape[: len(leading_dims)] + tgt_lats.shape
     out_values = np.empty(out_shape, dtype=np.float64)
     if not leading_dims:
         kernel = _select_horizontal_kernel(method)
-        out_values[...] = kernel(
+        field = _apply_source_mask_to_native_field(
             _native_source_field(transposed.values, nloen),
+            prepared_mask,
+            source_pl=nloen,
+            pundef=pundef,
+        )
+        out_values[...] = kernel(
+            field,
             source_lats=src_lats,
             source_lons=src_lons,
             source_pl=nloen,
@@ -262,6 +295,8 @@ def _horizontal_interpolate_data_array(
             else:
                 block = transposed.values[leading_slice + (slice(None), slice(None))]
                 flat = block.reshape((-1, src_lats.size, src_lons.size))
+            flat_mask = _mask_for_xarray_block(prepared_mask, leading_slice, flat.shape)
+            flat = _apply_flat_source_mask(flat, flat_mask, pundef)
             if flat.shape[0] == 1:
                 block_out = kernel(
                     flat[0],
@@ -289,6 +324,14 @@ def _horizontal_interpolate_data_array(
             out_values[leading_slice + tuple(slice(None) for _ in tgt_lats.shape)] = block_out.reshape(
                 block.shape[: -len(source["dims"])] + tgt_lats.shape
             )
+
+    out_values = _finalize_masked_output(
+        out_values,
+        source_mask=source_mask,
+        target_mask=target_mask,
+        target_shape=tgt_lats.shape,
+        pundef=pundef,
+    )
 
     target_dims, coords = _target_dims_and_coords(
         obj,
@@ -323,6 +366,9 @@ def _horizontal_interpolate_dataset(
     shape_preserving: bool,
     variables,
     skip_non_horizontal: bool,
+    source_mask,
+    target_mask,
+    pundef: float,
 ) -> xr.Dataset:
     selected = list(obj.data_vars) if variables is None else [str(v) for v in variables]
     out = xr.Dataset(attrs=dict(obj.attrs) if keep_attrs else {})
@@ -349,6 +395,9 @@ def _horizontal_interpolate_dataset(
             keep_attrs=keep_attrs,
             average_radius=average_radius,
             shape_preserving=shape_preserving,
+            source_mask=source_mask,
+            target_mask=target_mask,
+            pundef=pundef,
         )
     return out
 
@@ -416,6 +465,14 @@ def _method_implies_shape_preserving(method: str) -> bool:
     }
 
 
+def _validate_source_mask_method(method: str, source_mask) -> None:
+    if source_mask is None:
+        return
+    normalized = _normalize_method(method)
+    if normalized not in {"nearest", "average"}:
+        raise ValueError("source_mask is only supported with method='nearest' or method='average'")
+
+
 def _select_horizontal_kernel(method: str):
     normalized = _normalize_method(method)
     if normalized in {"nearest", "average"}:
@@ -443,6 +500,130 @@ def _regular_kwargs(method: str, shape_preserving: bool) -> dict:
     if _normalize_method(method) != "quadratic12":
         return {}
     return {"monotonic": bool(shape_preserving or _method_implies_shape_preserving(method))}
+
+
+def _resolve_pundef(missing_value) -> float:
+    _ = missing_value
+    return 1.0e20
+
+
+def _prepare_numpy_source_mask(
+    source_mask,
+    *,
+    values: np.ndarray,
+    source_shape: tuple[int, ...],
+    axis,
+    flat_count: int,
+) -> np.ndarray | None:
+    if source_mask is None:
+        return None
+    mask = np.asarray(source_mask, dtype=bool)
+    if mask.shape == source_shape:
+        return np.broadcast_to(mask.reshape((1, int(np.prod(source_shape)))), (flat_count, int(np.prod(source_shape))))
+    if mask.shape == values.shape:
+        moved, _, _ = _move_source_to_end(mask, source_shape, axis)
+        return moved.reshape((flat_count, int(np.prod(source_shape))))
+    raise ValueError(
+        "source_mask must have the horizontal source shape or the same shape as values"
+    )
+
+
+def _prepare_xarray_source_mask(
+    source_mask,
+    transposed: xr.DataArray,
+    source: dict,
+    leading_dims: list[str],
+):
+    if source_mask is None:
+        return None
+    if isinstance(source_mask, xr.DataArray):
+        allowed_dims = tuple(leading_dims) + tuple(source["dims"])
+        extra = set(source_mask.dims) - set(allowed_dims)
+        if extra:
+            raise ValueError(f"source_mask contains unsupported dimensions: {sorted(extra)}")
+        return source_mask.transpose(*[dim for dim in allowed_dims if dim in source_mask.dims])
+    mask = np.asarray(source_mask, dtype=bool)
+    source_shape = tuple(transposed.sizes[dim] for dim in source["dims"])
+    full_shape = tuple(transposed.sizes[dim] for dim in leading_dims) + source_shape
+    if mask.shape not in {source_shape, full_shape}:
+        raise ValueError(
+            "source_mask must have horizontal source dimensions or the same shape as values"
+        )
+    return mask
+
+
+def _mask_for_xarray_block(prepared_mask, leading_slice: tuple[slice, ...], flat_shape: tuple[int, ...]):
+    if prepared_mask is None:
+        return None
+    if isinstance(prepared_mask, xr.DataArray):
+        if prepared_mask.ndim == len(leading_slice) + len(flat_shape[1:]):
+            mask = prepared_mask.values[leading_slice + tuple(slice(None) for _ in flat_shape[1:])]
+        else:
+            mask = prepared_mask.values
+    else:
+        mask = prepared_mask
+
+    mask_arr = np.asarray(mask, dtype=bool)
+    if mask_arr.shape == flat_shape[1:]:
+        return np.broadcast_to(mask_arr.reshape((1, -1)), (flat_shape[0], int(np.prod(flat_shape[1:]))))
+    if mask_arr.size == int(np.prod(flat_shape)):
+        return mask_arr.reshape((flat_shape[0], int(np.prod(flat_shape[1:]))))
+    raise ValueError("source_mask shape is not compatible with the current xarray chunk")
+
+
+def _apply_source_mask_to_native_field(
+    field: np.ndarray,
+    source_mask,
+    *,
+    source_pl: np.ndarray | None,
+    pundef: float,
+) -> np.ndarray:
+    if source_mask is None:
+        return field
+    field = np.asarray(field, dtype=np.float64)
+    mask = np.asarray(source_mask.values if isinstance(source_mask, xr.DataArray) else source_mask, dtype=bool)
+    if source_pl is not None:
+        mask = mask.reshape(int(source_pl.sum()))
+    elif mask.shape != field.shape:
+        mask = mask.reshape(field.shape)
+    return np.where(mask & np.isfinite(field), field, pundef)
+
+
+def _apply_flat_source_mask(field: np.ndarray, source_mask, pundef: float) -> np.ndarray:
+    if source_mask is None:
+        return field
+    arr = np.asarray(field, dtype=np.float64)
+    mask = np.asarray(source_mask, dtype=bool)
+    if arr.ndim == 1:
+        if mask.shape != arr.shape:
+            mask = mask.reshape(arr.shape)
+        return np.where(mask & np.isfinite(arr), arr, pundef)
+    flat_mask = mask.reshape((arr.shape[0], int(np.prod(arr.shape[1:]))))
+    flat_arr = arr.reshape((arr.shape[0], int(np.prod(arr.shape[1:]))))
+    masked = np.where(flat_mask & np.isfinite(flat_arr), flat_arr, pundef)
+    return masked.reshape(arr.shape)
+
+
+def _finalize_masked_output(
+    values: np.ndarray,
+    *,
+    source_mask,
+    target_mask,
+    target_shape: tuple[int, ...],
+    pundef: float,
+) -> np.ndarray:
+    if source_mask is None and target_mask is None:
+        return values
+    out = np.asarray(values, dtype=np.float64).copy()
+    out[np.abs(out) >= 1.0e10] = np.nan
+    if target_mask is None:
+        return out
+    mask = np.asarray(target_mask.values if isinstance(target_mask, xr.DataArray) else target_mask, dtype=bool)
+    if mask.shape != target_shape:
+        raise ValueError(f"target_mask must have target horizontal shape {target_shape}, got {mask.shape}")
+    broadcast_shape = (1,) * (out.ndim - len(target_shape)) + target_shape
+    out = np.where(mask.reshape(broadcast_shape), out, np.nan)
+    return out
 
 
 def _validate_horizontal_request(

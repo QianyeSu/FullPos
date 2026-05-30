@@ -182,6 +182,7 @@ py.install_sources(
     'src/fullpos/filtering.py',
     'src/fullpos/grib.py',
     'src/fullpos/grids.py',
+    'src/fullpos/masks.py',
     'src/fullpos/metadata.py',
     'src/fullpos/native.py',
     'src/fullpos/reduced.py',

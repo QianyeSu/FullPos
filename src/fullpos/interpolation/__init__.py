@@ -24,6 +24,7 @@ from .kernels import (
 from .native import spectral_regrid_batch, spectral_regrid_chunks, spectral_regrid_values
 from .regridder import DEFAULT_CHUNK_SIZE, Regridder
 from .surface import masked_regrid_chunks, masked_regrid_data_array, masked_regrid_values
+from ..masks import land_sea_mask_to_grid, masked_surface_interpolate
 
 __all__ = [
     "DEFAULT_CHUNK_SIZE",
@@ -37,6 +38,8 @@ __all__ = [
     "horizontal_halo_kernel",
     "horizontal_regular_kernel",
     "horizontal_interpolate",
+    "land_sea_mask_to_grid",
+    "masked_surface_interpolate",
     "masked_regrid_chunks",
     "masked_regrid_data_array",
     "masked_regrid_values",

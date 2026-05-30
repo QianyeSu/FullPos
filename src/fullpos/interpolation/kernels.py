@@ -196,6 +196,26 @@ def horizontal_regular_kernel(
     else:
         out = np.empty(flat_tgt_lats.size, dtype=np.float64)
         safe_indexer = _contiguous_true_slice(safe)
+        unsafe = ~safe
+        if np.any(unsafe):
+            if monotonic:
+                out[unsafe] = _nearest_horizontal_values(
+                    field,
+                    nloen=nloen,
+                    source_lats=src_lats,
+                    target_lats=flat_tgt_lats[unsafe],
+                    target_lons=flat_tgt_lons[unsafe],
+                )
+            else:
+                out[unsafe] = _ectrans.horizontal_halo_kernel(
+                    np.asfortranarray(field, dtype=np.float64),
+                    np.asfortranarray(nloen, dtype=np.int32),
+                    np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
+                    np.asfortranarray(np.deg2rad(flat_tgt_lats[unsafe]), dtype=np.float64),
+                    np.asfortranarray(np.deg2rad(np.nextafter(flat_tgt_lons[unsafe], np.inf)), dtype=np.float64),
+                    "nearest",
+                    1,
+                )
         if np.any(safe):
             safe_points = safe if safe_indexer is None else safe_indexer
             out[safe_points] = _ectrans.horizontal_regular_kernel(
@@ -207,16 +227,6 @@ def horizontal_regular_kernel(
                 normalized_method,
                 int(bool(monotonic)),
             )
-        unsafe = ~safe
-        out[unsafe] = _ectrans.horizontal_halo_kernel(
-            np.asfortranarray(field, dtype=np.float64),
-            np.asfortranarray(nloen, dtype=np.int32),
-            np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
-            np.asfortranarray(np.deg2rad(flat_tgt_lats[unsafe]), dtype=np.float64),
-            np.asfortranarray(np.deg2rad(np.nextafter(flat_tgt_lons[unsafe], np.inf)), dtype=np.float64),
-            "nearest",
-            1,
-        )
     return np.asarray(out, dtype=np.float64).reshape(tgt_lats.shape)
 
 
@@ -250,6 +260,24 @@ def horizontal_regular_kernel_batch(
     normalized_method = _normalize_regular_method(method)
     if monotonic and normalized_method != "quadratic12":
         raise ValueError("monotonic=True is only supported with method='quadratic12'")
+    if monotonic and fields.shape[0] > 1:
+        # The native FPINT12 monotonic branch is not bit-stable through the
+        # multi-field wrapper under OpenMP. Preserve the exact single-field
+        # FULLPOS result for bounded scalar fields.
+        return np.stack(
+            [
+                horizontal_regular_kernel(
+                    field,
+                    source_lats=src_lats,
+                    source_pl=nloen,
+                    target_lats=tgt_lats,
+                    target_lons=tgt_lons,
+                    method=normalized_method,
+                    monotonic=True,
+                )
+                for field in fields
+            ]
+        )
 
     flat = np.asfortranarray(fields.T, dtype=np.float64)
     flat_tgt_lats = tgt_lats.reshape(-1)
@@ -290,16 +318,43 @@ def horizontal_regular_kernel_batch(
         dtype=np.float64,
     )
     for idx, field in enumerate(fields):
-        out[idx, unsafe] = _ectrans.horizontal_halo_kernel(
-            np.asfortranarray(field, dtype=np.float64),
-            nloen_f,
-            src_lats_rad,
-            unsafe_lats_rad,
-            unsafe_lons_rad,
-            "nearest",
-            1,
-        )
+        if monotonic:
+            out[idx, unsafe] = _nearest_horizontal_values(
+                field,
+                nloen=nloen,
+                source_lats=src_lats,
+                target_lats=flat_tgt_lats[unsafe],
+                target_lons=flat_tgt_lons[unsafe],
+            )
+        else:
+            out[idx, unsafe] = _ectrans.horizontal_halo_kernel(
+                np.asfortranarray(field, dtype=np.float64),
+                nloen_f,
+                src_lats_rad,
+                unsafe_lats_rad,
+                unsafe_lons_rad,
+                "nearest",
+                1,
+            )
     return out.reshape((fields.shape[0],) + tgt_lats.shape)
+
+
+def _nearest_horizontal_values(
+    field: np.ndarray,
+    *,
+    nloen: np.ndarray,
+    source_lats: np.ndarray,
+    target_lats: np.ndarray,
+    target_lons: np.ndarray,
+) -> np.ndarray:
+    """Deterministic nearest-row fallback for polar stencil guard points."""
+    values = np.asarray(field, dtype=np.float64).reshape(-1)
+    row_offsets = np.concatenate(([0], np.cumsum(nloen[:-1], dtype=np.int64)))
+    row_idx = np.abs(source_lats.reshape(1, -1) - target_lats.reshape(-1, 1)).argmin(axis=1)
+    row_nlon = nloen[row_idx].astype(np.int64)
+    lon_step = 360.0 / row_nlon
+    col_idx = np.floor(np.mod(target_lons, 360.0) / lon_step).astype(np.int64) % row_nlon
+    return values[row_offsets[row_idx] + col_idx]
 
 
 def _contiguous_true_slice(mask: np.ndarray) -> slice | None:

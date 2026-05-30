@@ -180,8 +180,9 @@ Packed reduced input is supported for unmasked ``bilinear`` and
 ``quadratic12`` interpolation through ``SUHOW1/SUHOW2`` plus
 ``FPINT4``/``FPINT12``. It is also supported for unmasked ``nearest`` and
 ``average`` interpolation through ``SUHOX1`` plus ``FPNEAR``/``FPAVG``.
-Mask-aware reduced-grid interpolation still needs the corresponding FULLPOS
-mask-generation layer.
+Mask-aware ``nearest`` and ``average`` are available through the native
+``FPNEAR``/``FPAVG`` halo path by passing ``source_mask``. ``bilinear`` and
+``quadratic12`` still use the unmasked ``FPINT4``/``FPINT12`` path.
 
 Nearest, Average, and Masks
 ---------------------------
@@ -207,4 +208,54 @@ The native ``FPNEAR`` and ``FPAVG`` kernels are available through
    )
 
 ``average_radius`` maps to FULLPOS ``KSLWIDE``. The default ``1`` uses a 2x2
-halo. Mask-aware interpolation with ``source_mask`` is still not implemented.
+halo.
+
+For bitmap surface fields, pass a boolean ``source_mask``. ``True`` marks
+source points that can participate in interpolation. Points outside the mask
+and non-finite source values are converted to the native FULLPOS undefined
+value before ``FPAVG``/``FPNEAR`` is called; undefined native output is returned
+to Python as ``NaN``. A boolean ``target_mask`` can also be passed to force
+invalid target points, for example SST over land, to ``NaN``:
+
+.. code-block:: python
+
+   from fullpos import horizontal_interpolate, land_sea_mask_to_grid
+
+   source_sea = land_sea_mask_to_grid(lsm, target_grid="O96", kind="sea")
+   target_sea = land_sea_mask_to_grid(lsm, target_grid="F160", kind="sea")
+
+   sst_f160 = horizontal_interpolate(
+       sst,
+       source_grid="O96",
+       target_grid="F160",
+       method="average",
+       source_mask=source_sea,
+       target_mask=target_sea,
+       chunks={"time": 1},
+   )
+
+``land_sea_mask_to_grid`` samples a regular latitude/longitude land-sea mask
+to an ``O``/``F``/``N`` Gaussian grid for mask preparation. ERA5 land-sea mask
+convention is ``0`` over sea and ``1`` over land; ``kind="sea"`` uses
+``lsm < 0.5``.
+
+The convenience wrapper prepares both source and target masks, then dispatches
+the field itself through native FULLPOS:
+
+.. code-block:: python
+
+   from fullpos import masked_surface_interpolate
+
+   sst_f480 = masked_surface_interpolate(
+       sst,
+       land_sea_mask=lsm,
+       source_grid="O96",
+       target_grid="F480",
+       kind="sea",
+       method="average",
+       chunks={"time": 1},
+   )
+
+Land points in the returned SST field are ``NaN``. This wrapper currently uses
+the native ``FPAVG``/``FPNEAR`` mask-aware halo path. The separate native
+FULLPOS physical 4/12-point land/sea weighting path remains future work.

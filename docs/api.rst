@@ -26,6 +26,8 @@ Common imports:
        spectral_filter,
        generic_spectral_filter,
        horizontal_interpolate,
+       land_sea_mask_to_grid,
+       masked_surface_interpolate,
        capabilities,
        diagnose_potential_vorticity,
        to_grib,
@@ -72,6 +74,12 @@ Horizontal Interpolation
 ------------------------
 
 .. automodule:: fullpos.interpolation.horizontal
+   :members:
+
+Surface Masks
+-------------
+
+.. automodule:: fullpos.masks
    :members:
 
 Vertical Interpolation
