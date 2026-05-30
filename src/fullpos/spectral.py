@@ -280,6 +280,63 @@ def spectral_synthesis_batch(
     )
 
 
+def spectral_wind_synthesis(
+    vorticity: np.ndarray,
+    divergence: np.ndarray,
+    *,
+    grid: str | GaussianGrid,
+    ntrunc: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Synthesize U/V wind from vorticity/divergence spectral coefficients.
+
+    This is a native ECTRANS ``nvordiv`` inverse-transform path. Inputs must be
+    flattened coefficient batches with shape ``(nfield, nspec2)`` using the
+    ECMWF/FULLPOS global real/imaginary coefficient layout accepted by
+    :func:`spectral_synthesis_batch`. The returned arrays are ``(nfield,
+    npoints)`` for reduced grids and ``(nfield, nlat, nlon)`` for regular
+    Gaussian grids.
+    """
+    target_grid = _ensure_grid(grid)
+    vor = np.asarray(vorticity)
+    div = np.asarray(divergence)
+    if vor.ndim != 2 or div.ndim != 2:
+        raise ValueError("vorticity and divergence must have shape (nfield, nspec2)")
+    if vor.shape != div.shape:
+        raise ValueError("vorticity and divergence must have the same shape")
+    if vor.shape[0] == 0:
+        raise ValueError("cannot synthesize an empty vorticity/divergence batch")
+
+    ntrunc = _default_coefficient_ntrunc(ntrunc, vor.shape[1])
+    add_native_runtime_dir()
+    _ectrans = _import_native_backend()
+
+    global _NATIVE_FAILURE, _NATIVE_LAST_OK
+    try:
+        out = _ectrans.vordiv_synthesis(
+            np.ascontiguousarray(vor, dtype=np.float64),
+            np.ascontiguousarray(div, dtype=np.float64),
+            _native_pl(target_grid),
+            int(ntrunc),
+        )
+    except Exception as exc:
+        _NATIVE_FAILURE = exc
+        _NATIVE_LAST_OK = False
+        raise FullposBackendError(
+            "native FULLPOS/ECTRANS backend failed during wind synthesis"
+        ) from exc
+
+    _NATIVE_FAILURE = None
+    _NATIVE_LAST_OK = True
+    out = np.asarray(out, dtype=np.float64)
+    nfield = vor.shape[0]
+    u = out[:nfield]
+    v = out[nfield:]
+    if target_grid.is_reduced:
+        return u, v
+    shape = (nfield, target_grid.nlat, target_grid.work_nlon)
+    return u.reshape(shape), v.reshape(shape)
+
+
 def spectral_fit_chunks(
     values: np.ndarray,
     *,
@@ -507,6 +564,21 @@ def _default_synthesis_ntrunc(
     if ntrunc is None:
         ntrunc = _infer_ntrunc_from_nspec2(coeff_count)
     ntrunc = _default_fit_ntrunc(grid, int(ntrunc))
+    expected = _nspec2_from_ntrunc(ntrunc)
+    if coeff_count != expected:
+        raise ValueError(
+            f"coefficients have {coeff_count} values per field, "
+            f"but T{ntrunc} expects {expected}"
+        )
+    return ntrunc
+
+
+def _default_coefficient_ntrunc(ntrunc: int | None, coeff_count: int) -> int:
+    if ntrunc is None:
+        ntrunc = _infer_ntrunc_from_nspec2(coeff_count)
+    ntrunc = int(ntrunc)
+    if ntrunc < 0:
+        raise ValueError(f"ntrunc must be non-negative, got {ntrunc}")
     expected = _nspec2_from_ntrunc(ntrunc)
     if coeff_count != expected:
         raise ValueError(

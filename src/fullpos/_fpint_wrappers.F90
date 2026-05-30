@@ -578,7 +578,7 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   integer(kind=jpim) :: fld, j, col, n, total_ext, offset_src, offset_ext
   integer(kind=jpim), allocatable :: kla(:), klon(:), klonn(:), klos(:), kloss(:)
   integer(kind=jpim), allocatable :: kl0(:,:), kbox(:), kder(:), kdmp(:), row_offsets(:)
-  integer(kind=jpim) :: kgpst, kgpend, kfields, kfldbuf, kaslb1
+  integer(kind=jpim) :: kgpst, kgpend, kfields, kfldbuf, kaslb1, kfields_one, kfldbuf_one
   logical :: ldml
   logical, allocatable :: ldnrst(:), ldmask(:), ldmono(:)
   real(kind=jprb) :: pi, p4jp, pundef
@@ -706,6 +706,8 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
   kgpst = 1
   kgpend = kproma
   kaslb1 = total_ext
+  kfields_one = 1
+  kfldbuf_one = 1
   allocate(kbox(kproma), kder(kfields), kdmp(kfields), prow(kproma,kfields))
   allocate(ldnrst(kfields), ldmask(kfields), ldmono(kfields))
   kbox = 1
@@ -719,8 +721,14 @@ subroutine fullpos_horizontal_regular_batch_c(nlat, nsrc_points, nfields, ntarge
     call fpint4(kaslb1, kfprow, kfields, kgpst, kgpend, kproma, kfldbuf, kder, kdmp, &
                 ldml, ldnrst, kbox, kl0, pwxx4, pwxy, ldmask, pbuf_ext, prow, pundef)
   else
-    call fpint12(kaslb1, kfprow, kfields, kgpst, kgpend, kproma, kfldbuf, kder, kdmp, &
-                 ldml, ldnrst, ldmono, kbox, kl0, pwxx12, pwxy, ldmask, pbuf_ext, prow, pundef)
+!$omp parallel do default(shared) private(fld) schedule(static) if(kfields > 1)
+    do fld = 1, kfields
+      call fpint12(kaslb1, kfprow, kfields_one, kgpst, kgpend, kproma, kfldbuf_one, &
+                   kder(fld:fld), kdmp(fld:fld), ldml, ldnrst(fld:fld), ldmono(fld:fld), &
+                   kbox, kl0, pwxx12, pwxy, ldmask(fld:fld), &
+                   pbuf_ext((fld - 1) * total_ext + 1:fld * total_ext), prow(:,fld:fld), pundef)
+    enddo
+!$omp end parallel do
   endif
   output = prow
 

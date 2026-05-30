@@ -15,7 +15,8 @@ from fullpos import (
     vertical_capabilities,
     vertical_interpolate,
 )
-from fullpos.grids import gaussian_latitudes, octahedral_pl, regular_longitudes
+from fullpos.grids import gaussian_latitudes, octahedral_pl, parse_grid, regular_longitudes
+from fullpos.native import add_native_runtime_dir
 
 
 def test_bilinear_interpolate_matches_source_grid_points() -> None:
@@ -140,6 +141,63 @@ def test_quadratic12_monotonic_supports_regular_gaussian_target_grid() -> None:
     assert "method=quadratic12_monotonic" in out.attrs["history"]
     assert float(out.min()) >= 0.0
     assert float(out.max()) <= 1.0
+
+
+def test_native_field_major_batch_matches_legacy_batch_layout() -> None:
+    """The field-major fast path must be only a layout optimization."""
+    from fullpos.interpolation.kernels import (
+        _prepare_horizontal_row_batch,
+        _regular_stencil_safe_mask,
+    )
+
+    add_native_runtime_dir()
+    import fullpos._ectrans as _ectrans
+
+    source_grid = parse_grid("O32")
+    target_grid = parse_grid("F48")
+    values = np.arange(5 * source_grid.size, dtype=np.float64).reshape(5, source_grid.size)
+    values = values / 1000.0
+    fields, nloen, source_lats = _prepare_horizontal_row_batch(
+        values,
+        source_lats=None,
+        source_lons=None,
+        source_pl=source_grid.pl,
+        source_grid=None,
+    )
+    target_lats, target_lons = np.meshgrid(
+        gaussian_latitudes(target_grid.nlat),
+        regular_longitudes(target_grid.work_nlon),
+        indexing="ij",
+    )
+    flat_target_lats = target_lats.reshape(-1)
+    flat_target_lons = target_lons.reshape(-1)
+    safe = _regular_stencil_safe_mask(flat_target_lats, source_lats)
+
+    for method, monotonic in (
+        ("bilinear", False),
+        ("quadratic12", False),
+        ("quadratic12", True),
+    ):
+        legacy = _ectrans.horizontal_regular_kernel_batch(
+            np.asfortranarray(fields.T, dtype=np.float64),
+            np.asfortranarray(nloen, dtype=np.int32),
+            np.asfortranarray(np.deg2rad(source_lats), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_target_lats[safe]), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_target_lons[safe]), dtype=np.float64),
+            method,
+            int(monotonic),
+        )
+        field_major = _ectrans.horizontal_regular_kernel_batch_field_major(
+            np.ascontiguousarray(fields, dtype=np.float64),
+            np.asfortranarray(nloen, dtype=np.int32),
+            np.asfortranarray(np.deg2rad(source_lats), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_target_lats[safe]), dtype=np.float64),
+            np.asfortranarray(np.deg2rad(flat_target_lons[safe]), dtype=np.float64),
+            method,
+            int(monotonic),
+        )
+
+        np.testing.assert_array_equal(field_major, np.asarray(legacy).T)
 
 
 def test_quadratic12_monotonic_supports_packed_o_grid_to_regular_gaussian_target() -> None:

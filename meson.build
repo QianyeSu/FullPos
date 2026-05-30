@@ -13,6 +13,7 @@ numpy_inc = run_command(
   ['-c', 'import numpy; print(numpy.get_include())'],
   check: true,
 ).stdout().strip()
+c_compiler = meson.get_compiler('c')
 fortran_compiler = meson.get_compiler('fortran')
 
 native_prefix_opt = get_option('fullpos_native_prefix')
@@ -90,6 +91,10 @@ fullpos_fortran_args = [
   '-I' + fullpos_native_prefix / 'module' / 'fiat',
   '-I' + fullpos_native_prefix / 'include' / 'fiat',
 ]
+
+if c_compiler.get_id() == 'gcc'
+  ectrans_c_args += ['-fopenmp']
+endif
 
 if fortran_compiler.get_id() == 'gcc'
   fullpos_fortran_args += ['-ffree-line-length-none']

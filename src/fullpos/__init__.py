@@ -49,6 +49,7 @@ _OBJECT_EXPORTS = {
     "spectral_regrid_values": ("fullpos.api", "spectral_regrid_values"),
     "spectral_synthesis": ("fullpos.spectral", "spectral_synthesis"),
     "spectral_synthesis_values": ("fullpos.spectral", "spectral_synthesis_values"),
+    "spectral_wind_synthesis": ("fullpos.spectral", "spectral_wind_synthesis"),
     "to_grib": ("fullpos.grib", "to_grib"),
     "vertical_capabilities": ("fullpos.vertical", "vertical_capabilities"),
     "vertical_interpolate": ("fullpos.vertical", "vertical_interpolate"),

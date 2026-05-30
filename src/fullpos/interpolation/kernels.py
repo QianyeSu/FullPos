@@ -260,13 +260,12 @@ def horizontal_regular_kernel_batch(
     normalized_method = _normalize_regular_method(method)
     if monotonic and normalized_method != "quadratic12":
         raise ValueError("monotonic=True is only supported with method='quadratic12'")
-    flat = np.asfortranarray(fields.T, dtype=np.float64)
     flat_tgt_lats = tgt_lats.reshape(-1)
     flat_tgt_lons = tgt_lons.reshape(-1)
     safe = _regular_stencil_safe_mask(flat_tgt_lats, src_lats)
     if np.all(safe):
-        out = _ectrans.horizontal_regular_kernel_batch(
-            flat,
+        out = _ectrans.horizontal_regular_kernel_batch_field_major(
+            np.ascontiguousarray(fields, dtype=np.float64),
             np.asfortranarray(nloen, dtype=np.int32),
             np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
             np.asfortranarray(np.deg2rad(flat_tgt_lats), dtype=np.float64),
@@ -274,14 +273,16 @@ def horizontal_regular_kernel_batch(
             normalized_method,
             int(bool(monotonic)),
         )
-        return np.asarray(out, dtype=np.float64).T.reshape((fields.shape[0],) + tgt_lats.shape)
+        return np.asarray(out, dtype=np.float64).reshape((fields.shape[0],) + tgt_lats.shape)
+
+    flat = np.asfortranarray(fields.T, dtype=np.float64)
 
     out = np.empty((fields.shape[0], flat_tgt_lats.size), dtype=np.float64)
     safe_indexer = _contiguous_true_slice(safe)
     if np.any(safe):
         safe_points = safe if safe_indexer is None else safe_indexer
-        safe_out = _ectrans.horizontal_regular_kernel_batch(
-            flat,
+        safe_out = _ectrans.horizontal_regular_kernel_batch_field_major(
+            np.ascontiguousarray(fields, dtype=np.float64),
             np.asfortranarray(nloen, dtype=np.int32),
             np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64),
             np.asfortranarray(np.deg2rad(flat_tgt_lats[safe_points]), dtype=np.float64),
@@ -289,7 +290,7 @@ def horizontal_regular_kernel_batch(
             normalized_method,
             int(bool(monotonic)),
         )
-        out[:, safe_points] = np.asarray(safe_out, dtype=np.float64).T
+        out[:, safe_points] = np.asarray(safe_out, dtype=np.float64)
     unsafe = ~safe
     nloen_f = np.asfortranarray(nloen, dtype=np.int32)
     src_lats_rad = np.asfortranarray(np.deg2rad(src_lats), dtype=np.float64)

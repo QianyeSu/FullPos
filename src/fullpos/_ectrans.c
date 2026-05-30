@@ -7,6 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
+#include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include "ectrans/transi.h"
 
@@ -19,6 +26,10 @@ static int cached_src_trunc = -1;
 static int cached_dst_trunc = -1;
 static PyArrayObject *cached_src_pl = NULL;
 static PyArrayObject *cached_dst_pl = NULL;
+static struct Trans_t cached_synth_trans;
+static int cached_synth_ready = 0;
+static int cached_synth_trunc = -1;
+static PyArrayObject *cached_synth_pl = NULL;
 
 extern void fullpos_fpint4_c(
     const int *kaslb1,
@@ -272,6 +283,70 @@ static int env_flag_enabled(const char *name)
     return value != NULL && value[0] != '\0' && strcmp(value, "0") != 0;
 }
 
+static double monotonic_seconds(void)
+{
+#ifdef _WIN32
+    LARGE_INTEGER frequency;
+    LARGE_INTEGER counter;
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&counter);
+    return (double)counter.QuadPart / (double)frequency.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1.0e-9;
+#endif
+}
+
+static int should_parallel_reorder(int nfld, int nspec2g)
+{
+    const char *value = getenv("FULLPOS_ECTRANS_REORDER_OMP_MIN_VALUES");
+    long min_values = 20000000L;
+    if (env_flag_enabled("FULLPOS_ECTRANS_DISABLE_REORDER_OMP")) {
+        return 0;
+    }
+    if (value != NULL && value[0] != '\0') {
+        min_values = strtol(value, NULL, 10);
+        if (min_values < 0) {
+            min_values = 0;
+        }
+    }
+    return nfld > 1 && (long)nfld * (long)nspec2g >= min_values;
+}
+
+static int push_omp_num_threads_from_env(const char *name)
+{
+#ifdef _OPENMP
+    const char *value = getenv(name);
+    long requested = 0;
+    int old_threads = 0;
+    if (value == NULL || value[0] == '\0') {
+        return 0;
+    }
+    requested = strtol(value, NULL, 10);
+    if (requested <= 0 || requested > INT_MAX) {
+        return 0;
+    }
+    old_threads = omp_get_max_threads();
+    omp_set_num_threads((int)requested);
+    return old_threads;
+#else
+    (void)name;
+    return 0;
+#endif
+}
+
+static void pop_omp_num_threads(int old_threads)
+{
+#ifdef _OPENMP
+    if (old_threads > 0) {
+        omp_set_num_threads(old_threads);
+    }
+#else
+    (void)old_threads;
+#endif
+}
+
 static void clear_global_transform_cache(void)
 {
     if (cached_src_ready) {
@@ -282,12 +357,19 @@ static void clear_global_transform_cache(void)
         trans_delete(&cached_dst_trans);
         cached_dst_ready = 0;
     }
+    if (cached_synth_ready) {
+        trans_delete(&cached_synth_trans);
+        cached_synth_ready = 0;
+    }
     Py_CLEAR(cached_src_pl);
     Py_CLEAR(cached_dst_pl);
+    Py_CLEAR(cached_synth_pl);
     cached_src_trunc = -1;
     cached_dst_trunc = -1;
+    cached_synth_trunc = -1;
     memset(&cached_src_trans, 0, sizeof(cached_src_trans));
     memset(&cached_dst_trans, 0, sizeof(cached_dst_trans));
+    memset(&cached_synth_trans, 0, sizeof(cached_synth_trans));
 }
 
 static void ectrans_module_free(void *module)
@@ -778,12 +860,23 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
 
     struct Trans_t trans;
     int trans_ready = 0;
+    int disable_cache = 0;
     int *nfrom = NULL;
     int *nto = NULL;
 
     int input_ndim = 0;
     int nfld = 1;
     npy_intp input_coeffs = 0;
+    int use_global_grid_fast_path = 0;
+    int disable_global_fast_path = 0;
+    int profile = 0;
+    double t_start = 0.0;
+    double t_after_setup = 0.0;
+    double t_after_alloc = 0.0;
+    double t_after_reorder = 0.0;
+    double t_after_distspec = 0.0;
+    double t_after_invtrans = 0.0;
+    double t_after_gather = 0.0;
 
     double *rspec_global = NULL;
     double *rspec = NULL;
@@ -791,6 +884,10 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
 
     (void)self;
     memset(&trans, 0, sizeof(trans));
+    profile = env_flag_enabled("FULLPOS_ECTRANS_PROFILE");
+    if (profile) {
+        t_start = monotonic_seconds();
+    }
 
     if (!PyArg_ParseTupleAndKeywords(
             args, kwargs, "OOi", kwlist, &coefficients_obj, &pl_obj, &trunc)) {
@@ -829,10 +926,30 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
     if (ensure_native_initialized() != 0) {
         goto fail;
     }
-    if (setup_transform(&trans, pl, trunc) != 0) {
-        goto fail;
+    disable_global_fast_path = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_GLOBAL_FASTPATH");
+    disable_cache = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_CACHE");
+    if (disable_cache) {
+        if (setup_transform(&trans, pl, trunc) != 0) {
+            goto fail;
+        }
+        trans_ready = 1;
+    } else {
+        if (ensure_cached_transform(
+                &cached_synth_trans,
+                &cached_synth_ready,
+                &cached_synth_trunc,
+                &cached_synth_pl,
+                pl,
+                trunc) != 0) {
+            goto fail;
+        }
+        trans = cached_synth_trans;
     }
-    trans_ready = 1;
+    use_global_grid_fast_path =
+        !disable_global_fast_path && trans.nproc == 1;
+    if (profile) {
+        t_after_setup = monotonic_seconds();
+    }
 
     if ((size_t)input_coeffs != (size_t)trans.nspec2g) {
         PyErr_Format(
@@ -844,12 +961,32 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
         goto fail;
     }
 
+    {
+        npy_intp dims[2] = {(npy_intp)nfld, (npy_intp)trans.ngptotg};
+        if (input_ndim == 1) {
+            out = (PyArrayObject *)PyArray_SimpleNew(1, &dims[1], NPY_DOUBLE);
+        } else {
+            out = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+        }
+        if (!out) {
+            PyErr_Format(
+                PyExc_MemoryError,
+                "output allocation failed: nfld=%d dst_ngptotg=%d input_ndim=%d",
+                nfld,
+                trans.ngptotg,
+                input_ndim);
+            goto fail;
+        }
+    }
+
     rspec_global = (double *)calloc((size_t)nfld * (size_t)trans.nspec2g, sizeof(double));
     rspec = (double *)calloc((size_t)nfld * (size_t)trans.nspec2, sizeof(double));
-    rgp = (double *)calloc((size_t)nfld * (size_t)trans.ngptot, sizeof(double));
+    if (!use_global_grid_fast_path) {
+        rgp = (double *)calloc((size_t)nfld * (size_t)trans.ngptot, sizeof(double));
+    }
     nfrom = (int *)malloc((size_t)nfld * sizeof(int));
     nto = (int *)malloc((size_t)nfld * sizeof(int));
-    if (!rspec_global || !rspec || !rgp || !nfrom || !nto) {
+    if (!rspec_global || !rspec || (!use_global_grid_fast_path && !rgp) || !nfrom || !nto) {
         PyErr_NoMemory();
         goto fail;
     }
@@ -857,19 +994,35 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
         nfrom[i] = 1;
         nto[i] = 1;
     }
+    if (profile) {
+        t_after_alloc = monotonic_seconds();
+    }
 
     {
         const double *coeff_data = (const double *)PyArray_DATA(coefficients);
         if (nfld == 1) {
             memcpy(rspec_global, coeff_data, (size_t)trans.nspec2g * sizeof(double));
         } else {
-            for (int f = 0; f < nfld; ++f) {
+            if (should_parallel_reorder(nfld, trans.nspec2g)) {
+                #pragma omp parallel for schedule(static)
                 for (int s = 0; s < trans.nspec2g; ++s) {
-                    rspec_global[(size_t)s * (size_t)nfld + (size_t)f] =
-                        coeff_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                    for (int f = 0; f < nfld; ++f) {
+                        rspec_global[(size_t)s * (size_t)nfld + (size_t)f] =
+                            coeff_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                    }
+                }
+            } else {
+                for (int s = 0; s < trans.nspec2g; ++s) {
+                    for (int f = 0; f < nfld; ++f) {
+                        rspec_global[(size_t)s * (size_t)nfld + (size_t)f] =
+                            coeff_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                    }
                 }
             }
         }
+    }
+    if (profile) {
+        t_after_reorder = monotonic_seconds();
     }
 
     {
@@ -880,36 +1033,62 @@ static PyObject *ectrans_synthesis(PyObject *self, PyObject *args, PyObject *kwa
         distspec.nfld = nfld;
         CHECK_TRANS(trans_distspec(&distspec));
     }
+    if (profile) {
+        t_after_distspec = monotonic_seconds();
+    }
 
     {
         struct InvTrans_t invtrans = new_invtrans(&trans);
         invtrans.nscalar = nfld;
         invtrans.rspscalar = rspec;
-        invtrans.rgp = rgp;
+        if (use_global_grid_fast_path) {
+            invtrans.lglobal = 1;
+            invtrans.nproma = trans.ngptotg;
+            invtrans.ngpblks = 1;
+            invtrans.rgp = (double *)PyArray_DATA(out);
+        } else {
+            invtrans.rgp = rgp;
+        }
         CHECK_TRANS(trans_invtrans(&invtrans));
+    }
+    if (profile) {
+        t_after_invtrans = monotonic_seconds();
     }
 
     {
-        npy_intp dims[2] = {(npy_intp)nfld, (npy_intp)trans.ngptotg};
-        if (input_ndim == 1) {
-            out = (PyArrayObject *)PyArray_SimpleNew(1, &dims[1], NPY_DOUBLE);
-        } else {
-            out = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+        if (!use_global_grid_fast_path) {
+            struct GathGrid_t gathgrid = new_gathgrid(&trans);
+            gathgrid.rgp = rgp;
+            gathgrid.rgpg = (double *)PyArray_DATA(out);
+            gathgrid.nfld = nfld;
+            gathgrid.nto = nto;
+            CHECK_TRANS(trans_gathgrid(&gathgrid));
         }
-        if (!out) {
-            goto fail;
-        }
-
-        struct GathGrid_t gathgrid = new_gathgrid(&trans);
-        gathgrid.rgp = rgp;
-        gathgrid.rgpg = (double *)PyArray_DATA(out);
-        gathgrid.nfld = nfld;
-        gathgrid.nto = nto;
-        CHECK_TRANS(trans_gathgrid(&gathgrid));
+    }
+    if (profile) {
+        t_after_gather = monotonic_seconds();
+        PySys_WriteStderr(
+            "FULLPOS_ECTRANS_PROFILE synthesis nfld=%d nspec2g=%d ngptotg=%d "
+            "cache=%d global_fastpath=%d setup=%.6f alloc=%.6f reorder=%.6f "
+            "distspec=%.6f invtrans=%.6f gather=%.6f total=%.6f\n",
+            nfld,
+            trans.nspec2g,
+            trans.ngptotg,
+            !disable_cache,
+            use_global_grid_fast_path,
+            t_after_setup - t_start,
+            t_after_alloc - t_after_setup,
+            t_after_reorder - t_after_alloc,
+            t_after_distspec - t_after_reorder,
+            t_after_invtrans - t_after_distspec,
+            t_after_gather - t_after_invtrans,
+            t_after_gather - t_start);
     }
 
-    CHECK_TRANS(trans_delete(&trans));
-    trans_ready = 0;
+    if (trans_ready) {
+        CHECK_TRANS(trans_delete(&trans));
+        trans_ready = 0;
+    }
 
     free(rspec_global);
     free(rspec);
@@ -931,6 +1110,314 @@ fail:
     free(nto);
     Py_XDECREF(out);
     Py_XDECREF(coefficients);
+    Py_XDECREF(pl);
+    return NULL;
+}
+
+static PyObject *ectrans_vordiv_synthesis(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"vorticity", "divergence", "pl", "trunc", NULL};
+    PyObject *vorticity_obj = NULL;
+    PyObject *divergence_obj = NULL;
+    PyObject *pl_obj = NULL;
+    int trunc = -1;
+
+    PyArrayObject *vorticity = NULL;
+    PyArrayObject *divergence = NULL;
+    PyArrayObject *pl = NULL;
+    PyArrayObject *out = NULL;
+
+    struct Trans_t trans;
+    int trans_ready = 0;
+    int disable_cache = 0;
+    int disable_global_fast_path = 0;
+    int use_global_grid_fast_path = 0;
+    int profile = 0;
+    double t_start = 0.0;
+    double t_after_setup = 0.0;
+    double t_after_alloc = 0.0;
+    double t_after_reorder = 0.0;
+    double t_after_distspec = 0.0;
+    double t_after_invtrans = 0.0;
+    double t_after_gather = 0.0;
+    int *nfrom = NULL;
+    int *nto = NULL;
+
+    int input_ndim = 0;
+    int nvordiv = 1;
+    npy_intp input_coeffs = 0;
+    double *vor_global = NULL;
+    double *div_global = NULL;
+    double *rspvor = NULL;
+    double *rspdiv = NULL;
+    double *rgp = NULL;
+
+    (void)self;
+    memset(&trans, 0, sizeof(trans));
+    profile = env_flag_enabled("FULLPOS_ECTRANS_PROFILE");
+    if (profile) {
+        t_start = monotonic_seconds();
+    }
+
+    if (!PyArg_ParseTupleAndKeywords(
+            args, kwargs, "OOOi", kwlist, &vorticity_obj, &divergence_obj, &pl_obj, &trunc)) {
+        return NULL;
+    }
+    if (trunc < 0) {
+        PyErr_SetString(PyExc_ValueError, "trunc must be non-negative");
+        return NULL;
+    }
+
+    vorticity =
+        (PyArrayObject *)PyArray_FROM_OTF(vorticity_obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
+    divergence =
+        (PyArrayObject *)PyArray_FROM_OTF(divergence_obj, NPY_DOUBLE, NPY_ARRAY_IN_ARRAY);
+    pl = (PyArrayObject *)PyArray_FROM_OTF(pl_obj, NPY_INT, NPY_ARRAY_IN_ARRAY);
+    if (!vorticity || !divergence || !pl) {
+        goto fail;
+    }
+    input_ndim = PyArray_NDIM(vorticity);
+    if ((input_ndim != 1 && input_ndim != 2) ||
+        PyArray_NDIM(divergence) != input_ndim ||
+        PyArray_NDIM(pl) != 1) {
+        PyErr_SetString(
+            PyExc_ValueError,
+            "vorticity/divergence must be 1D or 2D arrays; pl must be a 1D array");
+        goto fail;
+    }
+    if (input_ndim == 1) {
+        nvordiv = 1;
+        input_coeffs = PyArray_DIM(vorticity, 0);
+        if (PyArray_DIM(divergence, 0) != input_coeffs) {
+            PyErr_SetString(PyExc_ValueError, "divergence must have the same shape as vorticity");
+            goto fail;
+        }
+    } else {
+        if (PyArray_DIM(vorticity, 0) > INT_MAX) {
+            PyErr_SetString(PyExc_ValueError, "too many vorticity/divergence fields for TRANSI int interface");
+            goto fail;
+        }
+        nvordiv = (int)PyArray_DIM(vorticity, 0);
+        input_coeffs = PyArray_DIM(vorticity, 1);
+        if (PyArray_DIM(divergence, 0) != PyArray_DIM(vorticity, 0) ||
+            PyArray_DIM(divergence, 1) != input_coeffs) {
+            PyErr_SetString(PyExc_ValueError, "divergence must have the same shape as vorticity");
+            goto fail;
+        }
+    }
+    if (nvordiv <= 0) {
+        PyErr_SetString(PyExc_ValueError, "at least one vorticity/divergence field is required");
+        goto fail;
+    }
+    if (nvordiv > INT_MAX / 2) {
+        PyErr_SetString(PyExc_ValueError, "too many output vector fields for TRANSI int interface");
+        goto fail;
+    }
+
+    if (ensure_native_initialized() != 0) {
+        goto fail;
+    }
+    disable_global_fast_path = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_GLOBAL_FASTPATH");
+    disable_cache = env_flag_enabled("FULLPOS_ECTRANS_DISABLE_CACHE");
+    if (disable_cache) {
+        if (setup_transform(&trans, pl, trunc) != 0) {
+            goto fail;
+        }
+        trans_ready = 1;
+    } else {
+        if (ensure_cached_transform(
+                &cached_synth_trans,
+                &cached_synth_ready,
+                &cached_synth_trunc,
+                &cached_synth_pl,
+                pl,
+                trunc) != 0) {
+            goto fail;
+        }
+        trans = cached_synth_trans;
+    }
+    use_global_grid_fast_path =
+        !disable_global_fast_path && trans.nproc == 1;
+    if (profile) {
+        t_after_setup = monotonic_seconds();
+    }
+
+    if ((size_t)input_coeffs != (size_t)trans.nspec2g) {
+        PyErr_Format(
+            PyExc_ValueError,
+            "vorticity/divergence have %zd values per field, truncation T%d expects %d",
+            input_coeffs,
+            trunc,
+            trans.nspec2g);
+        goto fail;
+    }
+
+    {
+        npy_intp dims[2] = {(npy_intp)(2 * nvordiv), (npy_intp)trans.ngptotg};
+        out = (PyArrayObject *)PyArray_SimpleNew(2, dims, NPY_DOUBLE);
+        if (!out) {
+            PyErr_Format(
+                PyExc_MemoryError,
+                "output allocation failed: nvordiv=%d dst_ngptotg=%d",
+                nvordiv,
+                trans.ngptotg);
+            goto fail;
+        }
+    }
+
+    vor_global = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2g, sizeof(double));
+    div_global = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2g, sizeof(double));
+    rspvor = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2, sizeof(double));
+    rspdiv = (double *)calloc((size_t)nvordiv * (size_t)trans.nspec2, sizeof(double));
+    if (!use_global_grid_fast_path) {
+        rgp = (double *)calloc((size_t)(2 * nvordiv) * (size_t)trans.ngptot, sizeof(double));
+    }
+    nfrom = (int *)malloc((size_t)nvordiv * sizeof(int));
+    nto = (int *)malloc((size_t)(2 * nvordiv) * sizeof(int));
+    if (!vor_global || !div_global || !rspvor || !rspdiv ||
+        (!use_global_grid_fast_path && !rgp) || !nfrom || !nto) {
+        PyErr_NoMemory();
+        goto fail;
+    }
+    for (int i = 0; i < nvordiv; ++i) {
+        nfrom[i] = 1;
+    }
+    for (int i = 0; i < 2 * nvordiv; ++i) {
+        nto[i] = 1;
+    }
+    if (profile) {
+        t_after_alloc = monotonic_seconds();
+    }
+
+    {
+        const double *vor_data = (const double *)PyArray_DATA(vorticity);
+        const double *div_data = (const double *)PyArray_DATA(divergence);
+        if (nvordiv == 1) {
+            memcpy(vor_global, vor_data, (size_t)trans.nspec2g * sizeof(double));
+            memcpy(div_global, div_data, (size_t)trans.nspec2g * sizeof(double));
+        } else if (should_parallel_reorder(nvordiv, trans.nspec2g)) {
+            #pragma omp parallel for schedule(static)
+            for (int f = 0; f < nvordiv; ++f) {
+                for (int s = 0; s < trans.nspec2g; ++s) {
+                    vor_global[(size_t)s * (size_t)nvordiv + (size_t)f] =
+                        vor_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                    div_global[(size_t)s * (size_t)nvordiv + (size_t)f] =
+                        div_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                }
+            }
+        } else {
+            for (int f = 0; f < nvordiv; ++f) {
+                for (int s = 0; s < trans.nspec2g; ++s) {
+                    vor_global[(size_t)s * (size_t)nvordiv + (size_t)f] =
+                        vor_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                    div_global[(size_t)s * (size_t)nvordiv + (size_t)f] =
+                        div_data[(size_t)f * (size_t)trans.nspec2g + (size_t)s];
+                }
+            }
+        }
+    }
+    if (profile) {
+        t_after_reorder = monotonic_seconds();
+    }
+
+    {
+        struct DistSpec_t distspec = new_distspec(&trans);
+        distspec.nfrom = nfrom;
+        distspec.rspecg = vor_global;
+        distspec.rspec = rspvor;
+        distspec.nfld = nvordiv;
+        CHECK_TRANS(trans_distspec(&distspec));
+    }
+    {
+        struct DistSpec_t distspec = new_distspec(&trans);
+        distspec.nfrom = nfrom;
+        distspec.rspecg = div_global;
+        distspec.rspec = rspdiv;
+        distspec.nfld = nvordiv;
+        CHECK_TRANS(trans_distspec(&distspec));
+    }
+    if (profile) {
+        t_after_distspec = monotonic_seconds();
+    }
+
+    {
+        struct InvTrans_t invtrans = new_invtrans(&trans);
+        invtrans.nvordiv = nvordiv;
+        invtrans.rspvor = rspvor;
+        invtrans.rspdiv = rspdiv;
+        if (use_global_grid_fast_path) {
+            invtrans.lglobal = 1;
+            invtrans.nproma = trans.ngptotg;
+            invtrans.ngpblks = 1;
+            invtrans.rgp = (double *)PyArray_DATA(out);
+        } else {
+            invtrans.rgp = rgp;
+        }
+        CHECK_TRANS(trans_invtrans(&invtrans));
+    }
+    if (profile) {
+        t_after_invtrans = monotonic_seconds();
+    }
+
+    if (!use_global_grid_fast_path) {
+        struct GathGrid_t gathgrid = new_gathgrid(&trans);
+        gathgrid.rgp = rgp;
+        gathgrid.rgpg = (double *)PyArray_DATA(out);
+        gathgrid.nfld = 2 * nvordiv;
+        gathgrid.nto = nto;
+        CHECK_TRANS(trans_gathgrid(&gathgrid));
+    }
+    if (profile) {
+        t_after_gather = monotonic_seconds();
+        PySys_WriteStderr(
+            "FULLPOS_ECTRANS_PROFILE vordiv_synthesis nvordiv=%d nspec2g=%d ngptotg=%d "
+            "cache=%d global_fastpath=%d setup=%.6f alloc=%.6f reorder=%.6f "
+            "distspec=%.6f invtrans=%.6f gather=%.6f total=%.6f\n",
+            nvordiv,
+            trans.nspec2g,
+            trans.ngptotg,
+            !disable_cache,
+            use_global_grid_fast_path,
+            t_after_setup - t_start,
+            t_after_alloc - t_after_setup,
+            t_after_reorder - t_after_alloc,
+            t_after_distspec - t_after_reorder,
+            t_after_invtrans - t_after_distspec,
+            t_after_gather - t_after_invtrans,
+            t_after_gather - t_start);
+    }
+
+    if (trans_ready) {
+        CHECK_TRANS(trans_delete(&trans));
+        trans_ready = 0;
+    }
+
+    free(vor_global);
+    free(div_global);
+    free(rspvor);
+    free(rspdiv);
+    free(rgp);
+    free(nfrom);
+    free(nto);
+    Py_XDECREF(vorticity);
+    Py_XDECREF(divergence);
+    Py_XDECREF(pl);
+    return (PyObject *)out;
+
+fail:
+    if (trans_ready) {
+        trans_delete(&trans);
+    }
+    free(vor_global);
+    free(div_global);
+    free(rspvor);
+    free(rspdiv);
+    free(rgp);
+    free(nfrom);
+    free(nto);
+    Py_XDECREF(out);
+    Py_XDECREF(vorticity);
+    Py_XDECREF(divergence);
     Py_XDECREF(pl);
     return NULL;
 }
@@ -1207,6 +1694,21 @@ fail:
 static PyArrayObject *as_fortran_array(PyObject *obj, int typenum, int min_ndim, int max_ndim)
 {
     PyArrayObject *arr = (PyArrayObject *)PyArray_FROM_OTF(obj, typenum, NPY_ARRAY_F_CONTIGUOUS | NPY_ARRAY_ALIGNED);
+    if (!arr) {
+        return NULL;
+    }
+    int ndim = PyArray_NDIM(arr);
+    if (ndim < min_ndim || ndim > max_ndim) {
+        PyErr_Format(PyExc_ValueError, "expected array with %d..%d dimensions, got %d", min_ndim, max_ndim, ndim);
+        Py_DECREF(arr);
+        return NULL;
+    }
+    return arr;
+}
+
+static PyArrayObject *as_c_array(PyObject *obj, int typenum, int min_ndim, int max_ndim)
+{
+    PyArrayObject *arr = (PyArrayObject *)PyArray_FROM_OTF(obj, typenum, NPY_ARRAY_C_CONTIGUOUS | NPY_ARRAY_ALIGNED);
     if (!arr) {
         return NULL;
     }
@@ -1539,6 +2041,7 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
     PyArrayObject *out = NULL;
     int kbinl = 4;
     int ierr = 0;
+    int old_omp_threads = 0;
     (void)self;
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", kwlist,
@@ -1583,6 +2086,7 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
         }
     }
 
+    old_omp_threads = push_omp_num_threads_from_env("FULLPOS_HORIZONTAL_OMP_NUM_THREADS");
     fullpos_horizontal_regular_c(
         &nlat,
         &nsrc_points,
@@ -1596,6 +2100,8 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
         (const double *)PyArray_DATA(target_lons),
         (double *)PyArray_DATA(out),
         &ierr);
+    pop_omp_num_threads(old_omp_threads);
+    old_omp_threads = 0;
     if (ierr != 0) {
         PyErr_Format(PyExc_ValueError, "FULLPOS horizontal regular kernel failed with ierr=%d", ierr);
         goto fail;
@@ -1604,6 +2110,7 @@ static PyObject *ectrans_horizontal_regular_kernel(PyObject *self, PyObject *arg
     Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
     return (PyObject *)out;
 fail:
+    pop_omp_num_threads(old_omp_threads);
     Py_XDECREF(out);
     Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
     return NULL;
@@ -1620,7 +2127,17 @@ static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObjec
     PyArrayObject *out = NULL;
     int kbinl = 4;
     int ierr = 0;
+    int old_omp_threads = 0;
+    int profile = 0;
+    double t_start = 0.0;
+    double t_after_args = 0.0;
+    double t_after_output = 0.0;
+    double t_after_native = 0.0;
     (void)self;
+    profile = env_flag_enabled("FULLPOS_HORIZONTAL_PROFILE");
+    if (profile) {
+        t_start = monotonic_seconds();
+    }
 
     if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", kwlist,
                                      &values_obj, &nloen_obj, &source_lats_obj,
@@ -1648,6 +2165,9 @@ static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObjec
     if (!values || !nloen || !source_lats || !target_lats || !target_lons) {
         goto fail;
     }
+    if (profile) {
+        t_after_args = monotonic_seconds();
+    }
     int nlat = (int)PyArray_DIM(nloen, 0);
     int nsrc_points = (int)PyArray_DIM(values, 0);
     int nfields = (int)PyArray_DIM(values, 1);
@@ -1668,7 +2188,11 @@ static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObjec
             goto fail;
         }
     }
+    if (profile) {
+        t_after_output = monotonic_seconds();
+    }
 
+    old_omp_threads = push_omp_num_threads_from_env("FULLPOS_HORIZONTAL_OMP_NUM_THREADS");
     fullpos_horizontal_regular_batch_c(
         &nlat,
         &nsrc_points,
@@ -1683,6 +2207,23 @@ static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObjec
         (const double *)PyArray_DATA(target_lons),
         (double *)PyArray_DATA(out),
         &ierr);
+    pop_omp_num_threads(old_omp_threads);
+    old_omp_threads = 0;
+    if (profile) {
+        t_after_native = monotonic_seconds();
+        PySys_WriteStderr(
+            "FULLPOS_HORIZONTAL_PROFILE regular_batch nfields=%d nsrc=%d ntarget=%d "
+            "method=%s monotonic=%d args=%.6f output=%.6f native=%.6f total=%.6f\n",
+            nfields,
+            nsrc_points,
+            ntarget_points,
+            method,
+            monotonic,
+            t_after_args - t_start,
+            t_after_output - t_after_args,
+            t_after_native - t_after_output,
+            t_after_native - t_start);
+    }
     if (ierr != 0) {
         PyErr_Format(PyExc_ValueError, "FULLPOS horizontal regular batch kernel failed with ierr=%d", ierr);
         goto fail;
@@ -1691,7 +2232,166 @@ static PyObject *ectrans_horizontal_regular_kernel_batch(PyObject *self, PyObjec
     Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
     return (PyObject *)out;
 fail:
+    pop_omp_num_threads(old_omp_threads);
     Py_XDECREF(out);
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return NULL;
+}
+
+static PyObject *ectrans_horizontal_regular_kernel_batch_field_major(PyObject *self, PyObject *args, PyObject *kwargs)
+{
+    static char *kwlist[] = {"values", "nloen", "source_lats", "target_lats", "target_lons", "method", "monotonic", NULL};
+    PyObject *values_obj = NULL, *nloen_obj = NULL, *source_lats_obj = NULL;
+    PyObject *target_lats_obj = NULL, *target_lons_obj = NULL;
+    const char *method = "bilinear";
+    int monotonic = 0;
+    PyArrayObject *values = NULL, *nloen = NULL, *source_lats = NULL, *target_lats = NULL, *target_lons = NULL;
+    PyArrayObject *values_f = NULL;
+    PyArrayObject *out = NULL;
+    int kbinl = 4;
+    int ierr = 0;
+    int old_omp_threads = 0;
+    int nlat = 0;
+    int nfields = 0;
+    int nsrc_points = 0;
+    int ntarget_points = 0;
+    int profile = 0;
+    double t_start = 0.0;
+    double t_after_args = 0.0;
+    double t_after_reorder = 0.0;
+    double t_after_output = 0.0;
+    double t_after_native = 0.0;
+    (void)self;
+
+    profile = env_flag_enabled("FULLPOS_HORIZONTAL_PROFILE");
+    if (profile) {
+        t_start = monotonic_seconds();
+    }
+
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "OOOOO|sp", kwlist,
+                                     &values_obj, &nloen_obj, &source_lats_obj,
+                                     &target_lats_obj, &target_lons_obj, &method, &monotonic)) {
+        return NULL;
+    }
+    if (strcmp(method, "bilinear") == 0 || strcmp(method, "fpint4") == 0) {
+        kbinl = 4;
+    } else if (strcmp(method, "quadratic12") == 0 || strcmp(method, "fpint12") == 0) {
+        kbinl = 12;
+    } else {
+        PyErr_SetString(PyExc_ValueError, "method must be 'bilinear'/'fpint4' or 'quadratic12'/'fpint12'");
+        return NULL;
+    }
+    if (monotonic && kbinl != 12) {
+        PyErr_SetString(PyExc_ValueError, "monotonic=True is only supported with method='quadratic12'");
+        return NULL;
+    }
+
+    values = as_c_array(values_obj, NPY_DOUBLE, 2, 2);
+    nloen = as_fortran_array(nloen_obj, NPY_INT, 1, 1);
+    source_lats = as_fortran_array(source_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lats = as_fortran_array(target_lats_obj, NPY_DOUBLE, 1, 1);
+    target_lons = as_fortran_array(target_lons_obj, NPY_DOUBLE, 1, 1);
+    if (!values || !nloen || !source_lats || !target_lats || !target_lons) {
+        goto fail;
+    }
+    if (profile) {
+        t_after_args = monotonic_seconds();
+    }
+
+    nfields = (int)PyArray_DIM(values, 0);
+    nsrc_points = (int)PyArray_DIM(values, 1);
+    nlat = (int)PyArray_DIM(nloen, 0);
+    ntarget_points = (int)PyArray_DIM(target_lats, 0);
+    if (nfields <= 0) {
+        PyErr_SetString(PyExc_ValueError, "values must contain at least one field");
+        goto fail;
+    }
+    if (PyArray_DIM(source_lats, 0) != nlat ||
+        PyArray_DIM(target_lons, 0) != ntarget_points) {
+        PyErr_SetString(PyExc_ValueError, "source_lats/nloen or target_lats/target_lons dimensions are inconsistent");
+        goto fail;
+    }
+
+    {
+        npy_intp fdims[2] = {(npy_intp)nsrc_points, (npy_intp)nfields};
+        values_f = (PyArrayObject *)PyArray_EMPTY(2, fdims, NPY_DOUBLE, 1);
+        if (!values_f) {
+            goto fail;
+        }
+    }
+    {
+        const double *src = (const double *)PyArray_DATA(values);
+        double *dst = (double *)PyArray_DATA(values_f);
+        #pragma omp parallel for schedule(static) if(nfields * nsrc_points > 20000000)
+        for (int p = 0; p < nsrc_points; ++p) {
+            for (int f = 0; f < nfields; ++f) {
+                dst[(size_t)p + (size_t)f * (size_t)nsrc_points] =
+                    src[(size_t)f * (size_t)nsrc_points + (size_t)p];
+            }
+        }
+    }
+    if (profile) {
+        t_after_reorder = monotonic_seconds();
+    }
+
+    {
+        npy_intp odims[2] = {(npy_intp)nfields, (npy_intp)ntarget_points};
+        out = (PyArrayObject *)PyArray_EMPTY(2, odims, NPY_DOUBLE, 0);
+        if (!out) {
+            goto fail;
+        }
+    }
+    if (profile) {
+        t_after_output = monotonic_seconds();
+    }
+
+    old_omp_threads = push_omp_num_threads_from_env("FULLPOS_HORIZONTAL_OMP_NUM_THREADS");
+    fullpos_horizontal_regular_batch_c(
+        &nlat,
+        &nsrc_points,
+        &nfields,
+        &ntarget_points,
+        &kbinl,
+        &monotonic,
+        (const double *)PyArray_DATA(values_f),
+        (const int *)PyArray_DATA(nloen),
+        (const double *)PyArray_DATA(source_lats),
+        (const double *)PyArray_DATA(target_lats),
+        (const double *)PyArray_DATA(target_lons),
+        (double *)PyArray_DATA(out),
+        &ierr);
+    pop_omp_num_threads(old_omp_threads);
+    old_omp_threads = 0;
+    if (profile) {
+        t_after_native = monotonic_seconds();
+        fprintf(
+            stderr,
+            "FULLPOS_HORIZONTAL_PROFILE regular_batch_field_major nfields=%d nsrc=%d ntarget=%d "
+            "method=%s monotonic=%d args=%.6f reorder=%.6f output=%.6f native=%.6f total=%.6f\n",
+            nfields,
+            nsrc_points,
+            ntarget_points,
+            method,
+            monotonic,
+            t_after_args - t_start,
+            t_after_reorder - t_after_args,
+            t_after_output - t_after_reorder,
+            t_after_native - t_after_output,
+            t_after_native - t_start);
+        fflush(stderr);
+    }
+    if (ierr != 0) {
+        PyErr_Format(PyExc_ValueError, "FULLPOS horizontal field-major batch kernel failed with ierr=%d", ierr);
+        goto fail;
+    }
+
+    Py_XDECREF(values_f);
+    Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
+    return (PyObject *)out;
+fail:
+    pop_omp_num_threads(old_omp_threads);
+    Py_XDECREF(out);
+    Py_XDECREF(values_f);
     Py_XDECREF(values); Py_XDECREF(nloen); Py_XDECREF(source_lats); Py_XDECREF(target_lats); Py_XDECREF(target_lons);
     return NULL;
 }
@@ -1879,6 +2579,8 @@ static PyMethodDef EctransMethods[] = {
      "Call native OpenIFS/FULLPOS SUHOW1/SUHOW2 plus FPINT4/FPINT12 for regular global rows."},
     {"horizontal_regular_kernel_batch", (PyCFunction)ectrans_horizontal_regular_kernel_batch, METH_VARARGS | METH_KEYWORDS,
      "Call native OpenIFS/FULLPOS SUHOW1/SUHOW2 plus FPINT4/FPINT12 for a batch of regular global rows."},
+    {"horizontal_regular_kernel_batch_field_major", (PyCFunction)ectrans_horizontal_regular_kernel_batch_field_major, METH_VARARGS | METH_KEYWORDS,
+     "Call native OpenIFS/FULLPOS SUHOW1/SUHOW2 plus FPINT4/FPINT12 for a C-contiguous field-major batch."},
     {"horizontal_halo_kernel", (PyCFunction)ectrans_horizontal_halo_kernel, METH_VARARGS | METH_KEYWORDS,
      "Call native OpenIFS/FULLPOS SUHOX1 plus FPNEAR/FPAVG for nearest/average halo interpolation."},
     {"horizontal_halo_kernel_batch", (PyCFunction)ectrans_horizontal_halo_kernel_batch, METH_VARARGS | METH_KEYWORDS,
@@ -1887,6 +2589,8 @@ static PyMethodDef EctransMethods[] = {
      "Regrid one global Gaussian scalar field through ECTRANS spectral coefficients."},
     {"synthesis", (PyCFunction)ectrans_synthesis, METH_VARARGS | METH_KEYWORDS,
      "Transform ECTRANS spectral coefficients to global Gaussian scalar field(s)."},
+    {"vordiv_synthesis", (PyCFunction)ectrans_vordiv_synthesis, METH_VARARGS | METH_KEYWORDS,
+     "Transform ECTRANS vorticity/divergence spectral coefficients to U/V grid-point wind."},
     {"vector_scalar_diagnostics", (PyCFunction)ectrans_vector_scalar_diagnostics, METH_VARARGS | METH_KEYWORDS,
      "Diagnose vorticity and scalar horizontal derivatives with native ECTRANS transforms."},
     {NULL, NULL, 0, NULL},
