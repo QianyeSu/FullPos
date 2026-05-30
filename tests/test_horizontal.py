@@ -329,7 +329,7 @@ def test_horizontal_interpolate_data_array_supports_chunks() -> None:
     np.testing.assert_allclose(out.isel(time=1).values, base[2:-2] + 100.0, atol=1.0e-12)
 
 
-def test_horizontal_interpolate_chunks_use_batched_native_path() -> None:
+def test_horizontal_interpolate_chunks_use_batched_native_path(monkeypatch) -> None:
     pl = octahedral_pl(8)
     rows = [row * 1000.0 + np.arange(row_nlon, dtype=np.float64) for row, row_nlon in enumerate(pl)]
     base = np.concatenate(rows)
@@ -339,6 +339,31 @@ def test_horizontal_interpolate_chunks_use_batched_native_path() -> None:
         coords={"hybrid": [1, 2, 3]},
         attrs={"GRIB_pl": pl, "GRIB_N": 8, "GRIB_gridType": "reduced_gg"},
         name="q",
+    )
+
+    from fullpos.interpolation import horizontal as horizontal_module
+
+    calls = {"batch": 0, "single": 0}
+    original_batch = horizontal_module.horizontal_regular_kernel_batch
+    original_single = horizontal_module.horizontal_regular_kernel
+
+    def counted_batch(*args, **kwargs):
+        calls["batch"] += 1
+        return original_batch(*args, **kwargs)
+
+    def counted_single(*args, **kwargs):
+        calls["single"] += 1
+        return original_single(*args, **kwargs)
+
+    monkeypatch.setattr(
+        horizontal_module,
+        "horizontal_regular_kernel_batch",
+        counted_batch,
+    )
+    monkeypatch.setattr(
+        horizontal_module,
+        "horizontal_regular_kernel",
+        counted_single,
     )
 
     batched = horizontal_interpolate(
@@ -360,6 +385,7 @@ def test_horizontal_interpolate_chunks_use_batched_native_path() -> None:
 
     assert batched.dims == ("hybrid", "latitude", "longitude")
     np.testing.assert_allclose(batched.values, np.stack(single_fields), atol=1.0e-10)
+    assert calls == {"batch": 1, "single": obj.sizes["hybrid"]}
 
 
 def test_horizontal_interpolate_dataset_skips_non_horizontal_variables() -> None:

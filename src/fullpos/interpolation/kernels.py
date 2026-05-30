@@ -260,25 +260,6 @@ def horizontal_regular_kernel_batch(
     normalized_method = _normalize_regular_method(method)
     if monotonic and normalized_method != "quadratic12":
         raise ValueError("monotonic=True is only supported with method='quadratic12'")
-    if monotonic and fields.shape[0] > 1:
-        # The native FPINT12 monotonic branch is not bit-stable through the
-        # multi-field wrapper under OpenMP. Preserve the exact single-field
-        # FULLPOS result for bounded scalar fields.
-        return np.stack(
-            [
-                horizontal_regular_kernel(
-                    field,
-                    source_lats=src_lats,
-                    source_pl=nloen,
-                    target_lats=tgt_lats,
-                    target_lons=tgt_lons,
-                    method=normalized_method,
-                    monotonic=True,
-                )
-                for field in fields
-            ]
-        )
-
     flat = np.asfortranarray(fields.T, dtype=np.float64)
     flat_tgt_lats = tgt_lats.reshape(-1)
     flat_tgt_lons = tgt_lons.reshape(-1)
