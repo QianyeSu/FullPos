@@ -118,7 +118,7 @@ jobs:
 
       - name: Build wheels (Linux)
         if: startsWith(matrix.buildplat[1], 'manylinux')
-        uses: pypa/cibuildwheel@v3.4.1
+        uses: pypa/cibuildwheel@v4.0.0
         with:
           output-dir: wheelhouse
         env:
@@ -137,7 +137,7 @@ jobs:
 
       - name: Build wheels (macOS)
         if: startsWith(matrix.buildplat[0], 'macos')
-        uses: pypa/cibuildwheel@v3.4.1
+        uses: pypa/cibuildwheel@v4.0.0
         with:
           output-dir: wheelhouse
         env:
@@ -154,7 +154,7 @@ jobs:
 
       - name: Build wheels (Windows)
         if: matrix.buildplat[1] == 'win_amd64'
-        uses: pypa/cibuildwheel@v3.4.1
+        uses: pypa/cibuildwheel@v4.0.0
         with:
           output-dir: wheelhouse
         env:
